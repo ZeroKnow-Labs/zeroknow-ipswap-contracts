@@ -55,6 +55,24 @@ pub struct AtomicSwap;
 impl AtomicSwap {
     /// Buyer initiates swap by locking USDC into the contract.
     /// Cross-calls ip_registry to verify seller owns the listing.
+    /// 
+    /// # Arguments
+    /// * `env` - The contract environment.
+    /// * `listing_id` - The ID of the listing in the IP registry.
+    /// * `buyer` - The address of the buyer initiating the swap.
+    /// * `seller` - The address of the seller owning the listing.
+    /// * `usdc_token` - The address of the USDC token contract.
+    /// * `usdc_amount` - The amount of USDC to lock up.
+    /// * `zk_verifier` - The address of the zero-knowledge verifier contract.
+    /// * `ip_registry` - The address of the IP registry contract.
+    /// 
+    /// # Returns
+    /// Returns the unique `u64` identifier for the newly created swap.
+    /// 
+    /// # Panics
+    /// * Panics if the caller is not the `buyer`.
+    /// * Panics if the `seller` does not own the `listing_id` in the `ip_registry`.
+    /// * Panics if the token transfer fails.
     pub fn initiate_swap(
         env: Env,
         listing_id: u64,
@@ -89,6 +107,21 @@ impl AtomicSwap {
     }
 
     /// Seller confirms swap by submitting the decryption key; USDC released atomically.
+    /// 
+    /// # Arguments
+    /// * `env` - The contract environment.
+    /// * `swap_id` - The ID of the swap to confirm.
+    /// * `decryption_key` - The decryption key for the off-chain data.
+    /// 
+    /// # Returns
+    /// This function does not return a value.
+    /// 
+    /// # Panics
+    /// * Panics if the `decryption_key` is empty (`ContractError::EmptyDecryptionKey`).
+    /// * Panics if the swap does not exist.
+    /// * Panics if the swap status is not `Pending`.
+    /// * Panics if the caller is not the seller.
+    /// * Panics if the token transfer fails.
     pub fn confirm_swap(env: Env, swap_id: u64, decryption_key: Bytes) {
         assert!(!decryption_key.is_empty(), "{:?}", ContractError::EmptyDecryptionKey);
         let key = DataKey::Swap(swap_id);
@@ -108,6 +141,19 @@ impl AtomicSwap {
     }
 
     /// Buyer cancels and reclaims USDC if seller never confirms.
+    /// 
+    /// # Arguments
+    /// * `env` - The contract environment.
+    /// * `swap_id` - The ID of the swap to cancel.
+    /// 
+    /// # Returns
+    /// This function does not return a value.
+    /// 
+    /// # Panics
+    /// * Panics if the swap does not exist.
+    /// * Panics if the swap status is not `Pending`.
+    /// * Panics if the caller is not the buyer.
+    /// * Panics if the token transfer fails.
     pub fn cancel_swap(env: Env, swap_id: u64) {
         let key = DataKey::Swap(swap_id);
         let mut swap: Swap = env.storage().persistent().get(&key).expect("swap not found");
@@ -124,6 +170,17 @@ impl AtomicSwap {
         env.storage().instance().extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
     }
 
+    /// Retrieves the current status of a given swap.
+    /// 
+    /// # Arguments
+    /// * `env` - The contract environment.
+    /// * `swap_id` - The ID of the swap.
+    /// 
+    /// # Returns
+    /// Returns `Some(SwapStatus)` if the swap exists, or `None` if it does not.
+    /// 
+    /// # Panics
+    /// This view function does not panic under normal conditions.
     pub fn get_swap_status(env: Env, swap_id: u64) -> Option<SwapStatus> {
         env.storage()
             .persistent()
@@ -132,6 +189,17 @@ impl AtomicSwap {
     }
 
     /// Returns the decryption key once the swap is completed.
+    /// 
+    /// # Arguments
+    /// * `env` - The contract environment.
+    /// * `swap_id` - The ID of the swap.
+    /// 
+    /// # Returns
+    /// Returns `Some(Bytes)` containing the decryption key if the swap exists and is completed. 
+    /// Returns `None` if the swap does not exist or the key has not been submitted yet.
+    /// 
+    /// # Panics
+    /// This view function does not panic under normal conditions.
     pub fn get_decryption_key(env: Env, swap_id: u64) -> Option<Bytes> {
         env.storage()
             .persistent()
