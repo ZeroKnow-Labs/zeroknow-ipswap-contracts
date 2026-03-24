@@ -8,6 +8,7 @@ const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContractError {
     EmptyDecryptionKey,
+    InvalidAmount,
 }
 
 #[contracttype]
@@ -66,6 +67,7 @@ impl AtomicSwap {
         ip_registry: Address,
     ) -> u64 {
         buyer.require_auth();
+        assert!(usdc_amount > 0, "{:?}", ContractError::InvalidAmount);
 
         // Verify seller owns the listing in ip_registry
         let listing = IpRegistryClient::new(&env, &ip_registry).get_listing(&listing_id);
@@ -230,5 +232,34 @@ mod test {
 
         // impersonator tries to pose as seller
         client.initiate_swap(&listing_id, &buyer, &impersonator, &usdc_id, &500, &zk_verifier, &registry_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "InvalidAmount")]
+    fn test_initiate_swap_rejects_zero_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let usdc_admin = Address::generate(&env);
+        let usdc_id = env.register_stellar_asset_contract_v2(usdc_admin.clone()).address();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+        token::StellarAssetClient::new(&env, &usdc_id).mint(&buyer, &1000);
+
+        let registry_id = env.register(IpRegistry, ());
+        let registry = IpRegistryClient::new(&env, &registry_id);
+        let listing_id = registry.register_ip(
+            &seller,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        // zero amount should be rejected before any transfer or storage
+        client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &0, &zk_verifier, &registry_id);
     }
 }
