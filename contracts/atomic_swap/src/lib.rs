@@ -2,6 +2,12 @@
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Bytes, Env};
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ContractError {
+    EmptyDecryptionKey,
+}
+
+#[contracttype]
 #[derive(Clone, PartialEq)]
 pub enum SwapStatus {
     Pending,
@@ -57,7 +63,8 @@ impl AtomicSwap {
     }
 
     /// Seller confirms swap by submitting the decryption key; USDC released atomically.
-    pub fn confirm_swap(env: Env, swap_id: u64, _decryption_key: Bytes) {
+    pub fn confirm_swap(env: Env, swap_id: u64, decryption_key: Bytes) {
+        assert!(!decryption_key.is_empty(), "{:?}", ContractError::EmptyDecryptionKey);
         let mut swap: Swap = env
             .storage()
             .instance()
@@ -106,7 +113,7 @@ impl AtomicSwap {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env};
+    use soroban_sdk::Env;
 
     #[test]
     fn test_swap_status_pending_on_initiate() {
@@ -114,5 +121,14 @@ mod test {
         let _ = SwapStatus::Pending;
         let _ = SwapStatus::Completed;
         let _ = SwapStatus::Cancelled;
+    }
+
+    #[test]
+    #[should_panic(expected = "EmptyDecryptionKey")]
+    fn test_confirm_swap_rejects_empty_key() {
+        let env = Env::default();
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.confirm_swap(&0, &Bytes::new(&env));
     }
 }
