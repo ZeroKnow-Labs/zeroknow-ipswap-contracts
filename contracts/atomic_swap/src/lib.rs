@@ -18,16 +18,6 @@ pub enum SwapStatus {
     Cancelled,
 }
 
-impl core::fmt::Debug for SwapStatus {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            SwapStatus::Pending => write!(f, "Pending"),
-            SwapStatus::Completed => write!(f, "Completed"),
-            SwapStatus::Cancelled => write!(f, "Cancelled"),
-        }
-    }
-}
-
 
 #[contracttype]
 #[derive(Clone)]
