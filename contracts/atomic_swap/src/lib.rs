@@ -11,7 +11,7 @@ pub enum ContractError {
 }
 
 #[contracttype]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum SwapStatus {
     Pending,
     Completed,
@@ -46,6 +46,7 @@ pub struct Swap {
 pub enum DataKey {
     Swap(u64),
     Counter,
+    ActiveListingSwap(u64),
 }
 
 #[contract]
@@ -67,6 +68,12 @@ impl AtomicSwap {
     ) -> u64 {
         buyer.require_auth();
 
+        let active_listing_key = DataKey::ActiveListingSwap(listing_id);
+        if let Some(existing_swap_id) = env.storage().persistent().get::<DataKey, u64>(&active_listing_key) {
+            let existing_swap: Swap = env.storage().persistent().get(&DataKey::Swap(existing_swap_id)).unwrap();
+            assert!(existing_swap.status != SwapStatus::Pending, "swap already pending for this listing");
+        }
+
         // Verify seller owns the listing in ip_registry
         let listing = IpRegistryClient::new(&env, &ip_registry).get_listing(&listing_id);
         assert!(listing.owner == seller, "seller does not own this listing");
@@ -84,6 +91,8 @@ impl AtomicSwap {
             &Swap { listing_id, buyer, seller, usdc_amount, usdc_token, zk_verifier, status: SwapStatus::Pending, decryption_key: None },
         );
         env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage().persistent().set(&active_listing_key, &id);
+        env.storage().persistent().extend_ttl(&active_listing_key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
         env.storage().instance().extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
         id
     }
@@ -197,6 +206,42 @@ mod test {
 
         assert_eq!(client.get_decryption_key(&swap_id), Some(key));
         assert_eq!(usdc_client.balance(&seller), 500);
+    }
+
+    #[test]
+    #[should_panic(expected = "swap already pending for this listing")]
+    fn test_duplicate_swap_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let usdc_admin = Address::generate(&env);
+        let usdc_id = env.register_stellar_asset_contract_v2(usdc_admin.clone()).address();
+
+        let buyer1 = Address::generate(&env);
+        let buyer2 = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+
+        token::StellarAssetClient::new(&env, &usdc_id).mint(&buyer1, &1000);
+        token::StellarAssetClient::new(&env, &usdc_id).mint(&buyer2, &1000);
+
+        // Register listing with seller as owner
+        let registry_id = env.register(IpRegistry, ());
+        let registry = IpRegistryClient::new(&env, &registry_id);
+        let listing_id = registry.register_ip(
+            &seller,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        // buyer1 initiates
+        client.initiate_swap(&listing_id, &buyer1, &seller, &usdc_id, &500, &zk_verifier, &registry_id);
+
+        // buyer2 initiates, should panic
+        client.initiate_swap(&listing_id, &buyer2, &seller, &usdc_id, &500, &zk_verifier, &registry_id);
     }
 
     #[test]
