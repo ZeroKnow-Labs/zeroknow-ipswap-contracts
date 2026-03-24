@@ -18,16 +18,6 @@ pub enum SwapStatus {
     Cancelled,
 }
 
-impl core::fmt::Debug for SwapStatus {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            SwapStatus::Pending => write!(f, "Pending"),
-            SwapStatus::Completed => write!(f, "Completed"),
-            SwapStatus::Cancelled => write!(f, "Cancelled"),
-        }
-    }
-}
-
 
 #[contracttype]
 #[derive(Clone)]
@@ -46,6 +36,7 @@ pub struct Swap {
 pub enum DataKey {
     Swap(u64),
     Counter,
+    BuyerIndex(Address),
 }
 
 #[contract]
@@ -81,10 +72,22 @@ impl AtomicSwap {
         let key = DataKey::Swap(id);
         env.storage().persistent().set(
             &key,
-            &Swap { listing_id, buyer, seller, usdc_amount, usdc_token, zk_verifier, status: SwapStatus::Pending, decryption_key: None },
+            &Swap { listing_id, buyer: buyer.clone(), seller, usdc_amount, usdc_token, zk_verifier, status: SwapStatus::Pending, decryption_key: None },
         );
         env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
         env.storage().instance().extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        // Maintain buyer index
+        let buyer_key = DataKey::BuyerIndex(buyer.clone());
+        let mut ids: soroban_sdk::Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&buyer_key)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+        ids.push_back(id);
+        env.storage().persistent().set(&buyer_key, &ids);
+        env.storage().persistent().extend_ttl(&buyer_key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
         id
     }
 
@@ -137,6 +140,14 @@ impl AtomicSwap {
             .persistent()
             .get::<DataKey, Swap>(&DataKey::Swap(swap_id))
             .and_then(|swap| swap.decryption_key)
+    }
+
+    /// Returns all swap IDs initiated by the given buyer, in insertion order.
+    pub fn get_swaps_by_buyer(env: Env, buyer: Address) -> soroban_sdk::Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BuyerIndex(buyer))
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env))
     }
 }
 
@@ -230,5 +241,173 @@ mod test {
 
         // impersonator tries to pose as seller
         client.initiate_swap(&listing_id, &buyer, &impersonator, &usdc_id, &500, &zk_verifier, &registry_id);
+    }
+
+    // ── helper ────────────────────────────────────────────────────────────────
+    /// Sets up a full swap environment: USDC token, mints `usdc_amount` to `buyer`,
+    /// registers one IP listing owned by `seller`, and registers the AtomicSwap contract.
+    /// Returns `(usdc_id, listing_id, registry_id, contract_id, client)`.
+    fn setup_swap_env<'a>(
+        env: &'a Env,
+        buyer: &Address,
+        seller: &Address,
+        usdc_amount: i128,
+    ) -> (Address, u64, Address, Address, AtomicSwapClient<'a>) {
+        let usdc_admin = Address::generate(env);
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(usdc_admin.clone())
+            .address();
+        token::StellarAssetClient::new(env, &usdc_id).mint(buyer, &usdc_amount);
+
+        let registry_id = env.register(IpRegistry, ());
+        let registry = IpRegistryClient::new(env, &registry_id);
+        let listing_id = registry.register_ip(
+            seller,
+            &Bytes::from_slice(env, b"QmHash"),
+            &Bytes::from_slice(env, b"root"),
+        );
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(env, &contract_id);
+        (usdc_id, listing_id, registry_id, contract_id, client)
+    }
+
+    // ── 5.1 ───────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_get_swaps_by_buyer_empty() {
+        let env = Env::default();
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        let stranger = Address::generate(&env);
+        let result = client.get_swaps_by_buyer(&stranger);
+        assert_eq!(result.len(), 0);
+    }
+
+    // ── 5.2 ───────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_get_swaps_by_buyer_single() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+
+        let (usdc_id, listing_id, registry_id, _contract_id, client) =
+            setup_swap_env(&env, &buyer, &seller, 500);
+
+        let swap_id = client.initiate_swap(
+            &listing_id, &buyer, &seller, &usdc_id, &500, &zk_verifier, &registry_id,
+        );
+
+        let ids = client.get_swaps_by_buyer(&buyer);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids.get(0).unwrap(), swap_id);
+    }
+
+    // ── 5.3 ───────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_get_swaps_by_buyer_multiple() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+
+        // Mint enough for 3 swaps of 500 each
+        let (usdc_id, listing_id, registry_id, _contract_id, client) =
+            setup_swap_env(&env, &buyer, &seller, 1500);
+
+        let id1 = client.initiate_swap(
+            &listing_id, &buyer, &seller, &usdc_id, &500, &zk_verifier, &registry_id,
+        );
+        let id2 = client.initiate_swap(
+            &listing_id, &buyer, &seller, &usdc_id, &500, &zk_verifier, &registry_id,
+        );
+        let id3 = client.initiate_swap(
+            &listing_id, &buyer, &seller, &usdc_id, &500, &zk_verifier, &registry_id,
+        );
+
+        let ids = client.get_swaps_by_buyer(&buyer);
+        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.get(0).unwrap(), id1);
+        assert_eq!(ids.get(1).unwrap(), id2);
+        assert_eq!(ids.get(2).unwrap(), id3);
+    }
+
+    // ── 5.4 ───────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_buyer_index_isolation() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer_a = Address::generate(&env);
+        let buyer_b = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+
+        // Set up for buyer_a
+        let (usdc_id, listing_id_a, registry_id, _contract_id, client) =
+            setup_swap_env(&env, &buyer_a, &seller, 500);
+
+        // Mint USDC for buyer_b using the same token
+        token::StellarAssetClient::new(&env, &usdc_id).mint(&buyer_b, &500);
+
+        // Register a second listing for buyer_b's swap
+        let registry = IpRegistryClient::new(&env, &registry_id);
+        let listing_id_b = registry.register_ip(
+            &seller,
+            &Bytes::from_slice(&env, b"QmHash2"),
+            &Bytes::from_slice(&env, b"root2"),
+        );
+
+        let id_a = client.initiate_swap(
+            &listing_id_a, &buyer_a, &seller, &usdc_id, &500, &zk_verifier, &registry_id,
+        );
+        let id_b = client.initiate_swap(
+            &listing_id_b, &buyer_b, &seller, &usdc_id, &500, &zk_verifier, &registry_id,
+        );
+
+        let ids_a = client.get_swaps_by_buyer(&buyer_a);
+        assert_eq!(ids_a.len(), 1);
+        assert_eq!(ids_a.get(0).unwrap(), id_a);
+
+        let ids_b = client.get_swaps_by_buyer(&buyer_b);
+        assert_eq!(ids_b.len(), 1);
+        assert_eq!(ids_b.get(0).unwrap(), id_b);
+    }
+
+    // ── 5.5 ───────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_buyer_index_consistency_roundtrip() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+
+        let (usdc_id, listing_id, registry_id, _contract_id, client) =
+            setup_swap_env(&env, &buyer, &seller, 1000);
+
+        client.initiate_swap(
+            &listing_id, &buyer, &seller, &usdc_id, &500, &zk_verifier, &registry_id,
+        );
+        client.initiate_swap(
+            &listing_id, &buyer, &seller, &usdc_id, &500, &zk_verifier, &registry_id,
+        );
+
+        let ids = client.get_swaps_by_buyer(&buyer);
+        assert_eq!(ids.len(), 2);
+        for i in 0..ids.len() {
+            let id = ids.get(i).unwrap();
+            assert!(
+                client.get_swap_status(&id).is_some(),
+                "swap_id {} has no corresponding swap record",
+                id
+            );
+        }
     }
 }
