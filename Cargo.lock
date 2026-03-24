@@ -155,6 +155,7 @@ name = "atomic_swap"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
+ "zk_verifier",
 ]
 
 [[package]]
