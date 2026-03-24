@@ -1,6 +1,15 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Bytes, Env};
 
+// ~1 year in ledgers (5s per ledger)
+const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ContractError {
+    EmptyDecryptionKey,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContractError {
@@ -48,7 +57,6 @@ impl AtomicSwap {
         usdc_amount: i128,
     ) -> u64 {
         buyer.require_auth();
-        // Transfer USDC from buyer to contract
         token::Client::new(&env, &usdc_token).transfer(
             &buyer,
             &env.current_contract_address(),
@@ -60,6 +68,8 @@ impl AtomicSwap {
             &DataKey::Swap(id),
             &Swap { listing_id, buyer, seller, usdc_amount, usdc_token, status: SwapStatus::Pending, decryption_key: None },
         );
+        env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage().instance().extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
         id
     }
 
@@ -73,7 +83,6 @@ impl AtomicSwap {
             .expect("swap not found");
         assert!(swap.status == SwapStatus::Pending, "swap not pending");
         swap.seller.require_auth();
-        // Release USDC to seller
         token::Client::new(&env, &swap.usdc_token).transfer(
             &env.current_contract_address(),
             &swap.seller,
@@ -86,11 +95,8 @@ impl AtomicSwap {
 
     /// Buyer cancels and reclaims USDC if seller never confirms.
     pub fn cancel_swap(env: Env, swap_id: u64) {
-        let mut swap: Swap = env
-            .storage()
-            .instance()
-            .get(&DataKey::Swap(swap_id))
-            .expect("swap not found");
+        let key = DataKey::Swap(swap_id);
+        let mut swap: Swap = env.storage().persistent().get(&key).expect("swap not found");
         assert!(swap.status == SwapStatus::Pending, "swap not pending");
         swap.buyer.require_auth();
         token::Client::new(&env, &swap.usdc_token).transfer(
@@ -99,15 +105,13 @@ impl AtomicSwap {
             &swap.usdc_amount,
         );
         swap.status = SwapStatus::Cancelled;
-        env.storage().instance().set(&DataKey::Swap(swap_id), &swap);
+        env.storage().persistent().set(&key, &swap);
+        env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage().instance().extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
     }
 
     pub fn get_swap_status(env: Env, swap_id: u64) -> SwapStatus {
-        let swap: Swap = env
-            .storage()
-            .instance()
-            .get(&DataKey::Swap(swap_id))
-            .expect("swap not found");
+        let swap: Swap = env.storage().persistent().get(&DataKey::Swap(swap_id)).expect("swap not found");
         swap.status
     }
 

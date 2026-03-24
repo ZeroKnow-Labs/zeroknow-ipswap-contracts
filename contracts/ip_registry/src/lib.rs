@@ -1,6 +1,8 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, Vec};
 
+const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
+
 #[contracttype]
 #[derive(Clone)]
 pub struct Listing {
@@ -25,16 +27,17 @@ impl IpRegistry {
         owner.require_auth();
         let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
         env.storage().instance().set(&DataKey::Counter, &id);
-        env.storage().instance().set(
-            &DataKey::Listing(id),
-            &Listing { owner, ipfs_hash, merkle_root },
-        );
+
+        let key = DataKey::Listing(id);
+        env.storage().persistent().set(&key, &Listing { owner, ipfs_hash, merkle_root });
+        env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage().instance().extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
         id
     }
 
     pub fn get_listing(env: Env, listing_id: u64) -> Listing {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Listing(listing_id))
             .expect("listing not found")
     }
@@ -43,11 +46,7 @@ impl IpRegistry {
         let count: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
         let mut result = Vec::new(&env);
         for id in 1..=count {
-            let listing: Listing = env
-                .storage()
-                .instance()
-                .get(&DataKey::Listing(id))
-                .unwrap();
+            let listing: Listing = env.storage().persistent().get(&DataKey::Listing(id)).unwrap();
             if listing.owner == owner {
                 result.push_back(id);
             }
@@ -59,7 +58,7 @@ impl IpRegistry {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env};
+    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Env};
 
     #[test]
     fn test_register_and_get() {
@@ -74,6 +73,26 @@ mod test {
 
         let id = client.register_ip(&owner, &hash, &root);
         assert_eq!(id, 1);
+
+        let listing = client.get_listing(&id);
+        assert_eq!(listing.owner, owner);
+    }
+
+    #[test]
+    fn test_listing_survives_ttl_boundary() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+
+        env.ledger().with_mut(|li| li.sequence_number += 5_000);
 
         let listing = client.get_listing(&id);
         assert_eq!(listing.owner, owner);
