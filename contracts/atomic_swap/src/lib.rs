@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Bytes, Env};
+use soroban_sdk::{contract, contractclient, contractimpl, contracttype, token, Address, Bytes, Env, Vec};
 
 // ~1 year in ledgers (5s per ledger)
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -32,6 +32,7 @@ pub struct Swap {
     pub seller: Address,
     pub usdc_amount: i128,
     pub usdc_token: Address,
+    pub zk_verifier: Address,
     pub status: SwapStatus,
     pub decryption_key: Option<Bytes>,
 }
@@ -55,6 +56,7 @@ impl AtomicSwap {
         seller: Address,
         usdc_token: Address,
         usdc_amount: i128,
+        zk_verifier: Address,
     ) -> u64 {
         buyer.require_auth();
         token::Client::new(&env, &usdc_token).transfer(
