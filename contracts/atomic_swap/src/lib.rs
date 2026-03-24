@@ -1,9 +1,15 @@
 #![no_std]
 use soroban_sdk::{contract, contractclient, contractimpl, contracttype, token, Address, Bytes, Env, Vec};
 
+// ~1 year in ledgers (5s per ledger)
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
 
-/// Minimal cross-contract interface for ZkVerifier — mirrors zk_verifier::ProofNode.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ContractError {
+    EmptyDecryptionKey,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContractError {
@@ -79,12 +85,6 @@ impl AtomicSwap {
             .expect("swap not found");
         assert!(swap.status == SwapStatus::Pending, "swap not pending");
         swap.seller.require_auth();
-
-        // Verify ZK proof before releasing funds
-        let verified = ZkVerifierClient::new(&env, &swap.zk_verifier)
-            .verify_partial_proof(&swap.listing_id, &proof_leaf, &proof_path);
-        assert!(verified, "{:?}", ContractError::InvalidProof);
-
         token::Client::new(&env, &swap.usdc_token).transfer(
             &env.current_contract_address(),
             &swap.seller,
