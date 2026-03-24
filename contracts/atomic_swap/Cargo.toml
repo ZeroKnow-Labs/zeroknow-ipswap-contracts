@@ -8,6 +8,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
+zk_verifier = { path = "../zk_verifier" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true }
+zk_verifier = { path = "../zk_verifier" }
