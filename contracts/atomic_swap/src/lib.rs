@@ -15,10 +15,11 @@ pub enum ContractError {
     InvalidAmount = 3,
     ContractPaused = 4,
     NotInitialized = 5,
-    SwapNotPending = 6,
-    SwapAlreadyPending = 7,
-    SellerMismatch = 8,
-    SwapNotCancellable = 9,
+    AlreadyInitialized = 6,
+    SwapNotPending = 7,
+    SwapAlreadyPending = 8,
+    SellerMismatch = 9,
+    SwapNotCancellable = 10,
 }
 
 #[contracttype]
@@ -108,7 +109,7 @@ impl AtomicSwap {
         cancel_delay_secs: u64,
     ) {
         if env.storage().instance().has(&DataKey::Config) {
-            env.panic_with_error(ContractError::NotInitialized);
+            env.panic_with_error(ContractError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(
@@ -505,6 +506,56 @@ mod test {
             .address();
         token::StellarAssetClient::new(env, &usdc_id).mint(buyer, &amount);
         usdc_id
+    }
+
+    #[test]
+    fn test_initialize_stores_config_and_admin() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &250u32, &fee_recipient, &60u64);
+
+        // Verify that operations requiring initialization now work
+        // and that the contract is properly configured
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let (registry_id, listing_id) = setup_registry(&env, &seller);
+
+        // This should succeed because the contract is initialized
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+
+        assert_eq!(swap_id, 1);
+        let swap = client.get_swap(&swap_id).unwrap();
+        assert_eq!(swap.status, SwapStatus::Pending);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #6)")]
+    fn test_initialize_rejects_double_initialization() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        // First initialization should succeed
+        client.initialize(&admin, &250u32, &fee_recipient, &60u64);
+
+        // Second initialization should panic with AlreadyInitialized error
+        client.initialize(&admin, &500u32, &fee_recipient, &120u64);
     }
 
     #[test]
