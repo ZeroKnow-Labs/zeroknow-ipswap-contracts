@@ -393,4 +393,128 @@ mod test {
         ];
         assert!(client.verify_partial_proof(&2u64, &leaf1, &path1));
     }
+
+    // 4-leaf tree (2 levels):  root = H(H(h0,h1), H(h2,h3))
+    // Proves leaf2 with path: [sibling=h3 (right), sibling=H(h0,h1) (left)]
+    #[test]
+    fn test_two_level_merkle_proof() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+
+        let leaves: [Bytes; 4] = [
+            Bytes::from_slice(&env, b"leaf_a"),
+            Bytes::from_slice(&env, b"leaf_b"),
+            Bytes::from_slice(&env, b"leaf_c"),
+            Bytes::from_slice(&env, b"leaf_d"),
+        ];
+        let hs: [BytesN<32>; 4] = [
+            poseidon_leaf(&env, &leaves[0]),
+            poseidon_leaf(&env, &leaves[1]),
+            poseidon_leaf(&env, &leaves[2]),
+            poseidon_leaf(&env, &leaves[3]),
+        ];
+        let left_mid = poseidon_pair(&env, &hs[0], &hs[1]);
+        let right_mid = poseidon_pair(&env, &hs[2], &hs[3]);
+        let root = poseidon_pair(&env, &left_mid, &right_mid);
+
+        client.set_merkle_root(&owner, &10u64, &root);
+
+        // Proof for leaf_c (index 2): sibling=h3 (right), then sibling=left_mid (left)
+        let path: Vec<ProofNode> = soroban_sdk::vec![
+            &env,
+            ProofNode { sibling: hs[3].clone(), is_left: false },
+            ProofNode { sibling: left_mid.clone(), is_left: true },
+        ];
+        assert!(client.verify_partial_proof(&10u64, &leaves[2], &path));
+    }
+
+    #[test]
+    fn test_invalid_proof_wrong_sibling() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+
+        let leaf0 = Bytes::from_slice(&env, b"real_leaf");
+        let leaf1 = Bytes::from_slice(&env, b"real_sibling");
+        let h0 = poseidon_leaf(&env, &leaf0);
+        let h1 = poseidon_leaf(&env, &leaf1);
+        let root = poseidon_pair(&env, &h0, &h1);
+
+        client.set_merkle_root(&owner, &3u64, &root);
+
+        let wrong_sibling = poseidon_leaf(&env, &Bytes::from_slice(&env, b"wrong"));
+        let bad_path: Vec<ProofNode> = soroban_sdk::vec![
+            &env,
+            ProofNode { sibling: wrong_sibling, is_left: false },
+        ];
+        assert!(!client.verify_partial_proof(&3u64, &leaf0, &bad_path));
+    }
+
+    #[test]
+    fn test_tampered_leaf_fails_proof() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+
+        let leaf0 = Bytes::from_slice(&env, b"original_leaf");
+        let leaf1 = Bytes::from_slice(&env, b"sibling_leaf");
+        let h0 = poseidon_leaf(&env, &leaf0);
+        let h1 = poseidon_leaf(&env, &leaf1);
+        let root = poseidon_pair(&env, &h0, &h1);
+
+        client.set_merkle_root(&owner, &4u64, &root);
+
+        let tampered = Bytes::from_slice(&env, b"tampered_leaf");
+        let path: Vec<ProofNode> = soroban_sdk::vec![
+            &env,
+            ProofNode { sibling: h1.clone(), is_left: false },
+        ];
+        assert!(!client.verify_partial_proof(&4u64, &tampered, &path));
+    }
+
+    // Verifies that is_left=true places the sibling on the LEFT: H(sibling, current)
+    // and is_left=false places it on the RIGHT: H(current, sibling).
+    // Swapping is_left on a valid proof must produce false.
+    #[test]
+    fn test_is_left_ordering_correctness() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+
+        // leaf0 is the LEFT child: root = H(h0, h1), so proof for leaf0 uses is_left=false
+        let leaf0 = Bytes::from_slice(&env, b"left_child");
+        let leaf1 = Bytes::from_slice(&env, b"right_child");
+        let h0 = poseidon_leaf(&env, &leaf0);
+        let h1 = poseidon_leaf(&env, &leaf1);
+        let root = poseidon_pair(&env, &h0, &h1);
+
+        client.set_merkle_root(&owner, &5u64, &root);
+
+        // Correct: sibling (h1) is on the right → is_left=false
+        let correct_path: Vec<ProofNode> = soroban_sdk::vec![
+            &env,
+            ProofNode { sibling: h1.clone(), is_left: false },
+        ];
+        assert!(client.verify_partial_proof(&5u64, &leaf0, &correct_path));
+
+        // Wrong ordering: is_left=true would compute H(h1, h0) ≠ root
+        let wrong_path: Vec<ProofNode> = soroban_sdk::vec![
+            &env,
+            ProofNode { sibling: h1.clone(), is_left: true },
+        ];
+        assert!(!client.verify_partial_proof(&5u64, &leaf0, &wrong_path));
+    }
 }
