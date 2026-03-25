@@ -7,6 +7,8 @@ use soroban_sdk::{
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ContractError {
     InvalidInput = 1,
+    ListingNotFound = 2,
+    Unauthorized = 3,
 }
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -103,6 +105,68 @@ impl IpRegistry {
             .persistent()
             .get(&DataKey::OwnerIndex(owner))
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Transfer ownership of a listing to another address.
+    pub fn transfer_listing(env: Env, listing_id: u64, new_owner: Address) {
+        let key = DataKey::Listing(listing_id);
+        let mut listing: Listing = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ListingNotFound));
+
+        listing.owner.require_auth();
+        let old_owner = listing.owner.clone();
+
+        if old_owner == new_owner {
+            return;
+        }
+
+        // Update listing owner
+        listing.owner = new_owner.clone();
+        env.storage().persistent().set(&key, &listing);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        // Update old owner index
+        let old_idx_key = DataKey::OwnerIndex(old_owner.clone());
+        let mut old_ids: Vec<u64> = env.storage().persistent().get(&old_idx_key).unwrap();
+        if let Some(pos) = old_ids.first_index_of(listing_id) {
+            old_ids.remove(pos);
+        }
+        env.storage().persistent().set(&old_idx_key, &old_ids);
+        env.storage().persistent().extend_ttl(
+            &old_idx_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        // Update new owner index
+        let new_idx_key = DataKey::OwnerIndex(new_owner.clone());
+        let mut new_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&new_idx_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        new_ids.push_back(listing_id);
+        env.storage().persistent().set(&new_idx_key, &new_ids);
+        env.storage().persistent().extend_ttl(
+            &new_idx_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        // Emit transfer event
+        env.events().publish(
+            (soroban_sdk::symbol_short!("transfer"), listing_id),
+            (old_owner, new_owner),
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
     }
 }
 
@@ -220,5 +284,43 @@ mod test {
             &Bytes::new(&env),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_transfer_listing() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner1 = Address::generate(&env);
+        let owner2 = Address::generate(&env);
+        let hash = Bytes::from_slice(&env, b"QmHash");
+        let root = Bytes::from_slice(&env, b"root");
+
+        let id = client.register_ip(&owner1, &hash, &root);
+
+        assert_eq!(client.list_by_owner(&owner1).len(), 1);
+        assert_eq!(client.list_by_owner(&owner2).len(), 0);
+
+        client.transfer_listing(&id, &owner2);
+
+        let listing = client.get_listing(&id).unwrap();
+        assert_eq!(listing.owner, owner2);
+
+        assert_eq!(client.list_by_owner(&owner1).len(), 0);
+        assert_eq!(client.list_by_owner(&owner2).len(), 1);
+        assert_eq!(client.list_by_owner(&owner2).get(0).unwrap(), id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_transfer_listing_not_found() {
+        let env = Env::default();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let new_owner = Address::generate(&env);
+        client.transfer_listing(&999, &new_owner);
     }
 }
