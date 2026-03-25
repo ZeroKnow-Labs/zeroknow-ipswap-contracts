@@ -1,17 +1,18 @@
 #![no_std]
 use ip_registry::IpRegistryClient;
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Bytes, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, panic_with_error, token, Address, Bytes, Env};
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
 
-#[contracttype]
+#[contracterror]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContractError {
-    EmptyDecryptionKey,
+    EmptyDecryptionKey = 1,
+    SwapNotFound = 2,
 }
 
 #[contracttype]
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum SwapStatus {
     Pending,
     Completed,
@@ -45,6 +46,7 @@ pub enum DataKey {
     Config,
     Admin,
     Paused,
+    ActiveListingSwap(u64),
 }
 
 #[contract]
@@ -138,7 +140,7 @@ impl AtomicSwap {
         Self::assert_not_paused(&env);
         assert!(!decryption_key.is_empty(), "{:?}", ContractError::EmptyDecryptionKey);
         let key = DataKey::Swap(swap_id);
-        let mut swap: Swap = env.storage().persistent().get(&key).expect("swap not found");
+        let mut swap: Swap = env.storage().persistent().get(&key).unwrap_or_else(|| panic_with_error!(&env, ContractError::SwapNotFound));
         assert!(swap.status == SwapStatus::Pending, "swap not pending");
         swap.seller.require_auth();
 
@@ -226,6 +228,16 @@ mod test {
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
         assert_eq!(client.get_swap_status(&999), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_confirm_swap_returns_error_for_missing_swap() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.confirm_swap(&999, &Bytes::from_slice(&env, b"key"));
     }
 
     #[test]
