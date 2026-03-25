@@ -81,35 +81,6 @@ impl ZkVerifier {
     }
 
     /// Verify a Merkle inclusion proof for a leaf against the stored root.
-    ///
-    /// This function checks if a given piece of data (`leaf`) is part of the Merkle tree
-    /// associated with the specified `listing_id`. It cryptographically guarantees that the
-    /// data piece belongs to the expected dataset without revealing the entire set.
-    ///
-    /// # Security Implications
-    /// * **Authentication:** Relies on the previously stored Merkle root, which must have been
-    ///   securely set by the verified owner.
-    /// * **Format Vulnerability:** Assumes standard SHA-256 concatenation. The input leaves must
-    ///   be appropriately pre-hashed (or length-prefixed) in upstream processes to prevent second
-    ///   preimage attacks typical in naive Merkle tree constructions.
-    ///
-    /// # Execution Note
-    /// Due to missing direct array manipulation primitives in some Soroban SDK operations,
-    /// path components (sibling hashes) are appended safely using byte extensions.
-    ///
-    /// # Arguments
-    /// * `env` - The contract environment.
-    /// * `listing_id` - The ID of the listing representing the Merkle tree.
-    /// * `leaf` - The unhashed leaf data to verify.
-    /// * `path` - A `Vec<ProofNode>` representing the inclusion path. Each `ProofNode` contains
-    ///   the `sibling` hash (`BytesN<32>`) and an `is_left` boolean flag dictating order.
-    ///
-    /// # Returns
-    /// Returns `true` if the computed root exactly matches the stored root; otherwise, returns `false`.
-    ///
-    /// # Panics
-    /// * Panics if the stored Merkle root for `listing_id` is missing.
-    /// * May panic on internal memory allocation limits during byte reconstruction.
     pub fn verify_partial_proof(
         env: Env,
         listing_id: u64,
