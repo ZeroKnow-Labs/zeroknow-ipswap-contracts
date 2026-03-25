@@ -19,6 +19,8 @@ pub enum ContractError {
     SwapAlreadyPending = 7,
     SellerMismatch = 8,
     SwapNotCancellable = 9,
+    CounterOverflow = 10,
+    AlreadyInitialized = 11,
 }
 
 #[contracttype]
@@ -108,7 +110,7 @@ impl AtomicSwap {
         cancel_delay_secs: u64,
     ) {
         if env.storage().instance().has(&DataKey::Config) {
-            env.panic_with_error(ContractError::NotInitialized);
+            env.panic_with_error(ContractError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(
