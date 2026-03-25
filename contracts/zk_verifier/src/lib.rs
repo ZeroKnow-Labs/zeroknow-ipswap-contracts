@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Bytes, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
 
@@ -26,24 +26,46 @@ impl ZkVerifier {
     pub fn set_merkle_root(env: Env, owner: Address, listing_id: u64, root: BytesN<32>) {
         owner.require_auth();
         let owner_key = DataKey::Owner(listing_id);
-        if let Some(existing_owner) = env.storage().persistent().get::<DataKey, Address>(&owner_key) {
-            assert!(existing_owner == owner, "unauthorized: caller is not the listing owner");
+        if let Some(existing_owner) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&owner_key)
+        {
+            assert!(
+                existing_owner == owner,
+                "unauthorized: caller is not the listing owner"
+            );
         } else {
             env.storage().persistent().set(&owner_key, &owner);
-            env.storage().persistent().extend_ttl(&owner_key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &owner_key,
+                PERSISTENT_TTL_LEDGERS,
+                PERSISTENT_TTL_LEDGERS,
+            );
         }
         let key = DataKey::MerkleRoot(listing_id);
         env.storage().persistent().set(&key, &root);
-        env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
-        env.storage().instance().extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
     }
 
     pub fn get_merkle_root(env: Env, listing_id: u64) -> Option<BytesN<32>> {
-        env.storage().persistent().get(&DataKey::MerkleRoot(listing_id))
+        env.storage()
+            .persistent()
+            .get(&DataKey::MerkleRoot(listing_id))
     }
 
     /// Verify a Merkle inclusion proof for a leaf against the stored root.
-    pub fn verify_partial_proof(env: Env, listing_id: u64, leaf: Bytes, path: Vec<ProofNode>) -> bool {
+    pub fn verify_partial_proof(
+        env: Env,
+        listing_id: u64,
+        leaf: Bytes,
+        path: Vec<ProofNode>,
+    ) -> bool {
         let root: BytesN<32> = env
             .storage()
             .persistent()
@@ -69,7 +91,10 @@ impl ZkVerifier {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Bytes, Env, Vec};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger as _},
+        Bytes, Env, Vec,
+    };
 
     #[test]
     fn test_get_merkle_root_missing_returns_none() {
@@ -130,7 +155,10 @@ mod test {
 
         client.set_merkle_root(&owner, &1u64, &root);
 
-        let fake_root: BytesN<32> = env.crypto().sha256(&Bytes::from_slice(&env, b"fake")).into();
+        let fake_root: BytesN<32> = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, b"fake"))
+            .into();
         client.set_merkle_root(&attacker, &1u64, &fake_root);
     }
 }

@@ -30,16 +30,35 @@ impl IpRegistry {
         env.storage().instance().set(&DataKey::Counter, &id);
 
         let key = DataKey::Listing(id);
-        env.storage().persistent().set(&key, &Listing { owner: owner.clone(), ipfs_hash, merkle_root });
-        env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage().persistent().set(
+            &key,
+            &Listing {
+                owner: owner.clone(),
+                ipfs_hash,
+                merkle_root,
+            },
+        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
 
         let idx_key = DataKey::OwnerIndex(owner.clone());
-        let mut ids: Vec<u64> = env.storage().persistent().get(&idx_key).unwrap_or_else(|| Vec::new(&env));
+        let mut ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&idx_key)
+            .unwrap_or_else(|| Vec::new(&env));
         ids.push_back(id);
         env.storage().persistent().set(&idx_key, &ids);
-        env.storage().persistent().extend_ttl(&idx_key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage().persistent().extend_ttl(
+            &idx_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
 
-        env.storage().instance().extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
         id
     }
 
@@ -61,7 +80,10 @@ impl IpRegistry {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Env};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger as _},
+        Env,
+    };
 
     #[test]
     fn test_register_and_get() {
