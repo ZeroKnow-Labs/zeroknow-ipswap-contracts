@@ -36,6 +36,15 @@ pub enum DataKey {
     OwnerIndex(Address),
 }
 
+/// Emitted when an IP listing is deregistered.
+#[contractevent]
+pub struct IpDeregistered {
+    #[topic]
+    pub listing_id: u64,
+    #[topic]
+    pub owner: Address,
+}
+
 /// Emitted when a new IP listing is registered.
 #[contractevent]
 pub struct IpRegistered {
@@ -157,6 +166,57 @@ impl IpRegistry {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+    }
+
+    /// Deregister (remove) a listing. Requires owner auth.
+    /// Rejects if a pending swap exists for the listing.
+    pub fn deregister_listing(
+        env: Env,
+        listing_id: u64,
+        atomic_swap: Option<Address>,
+    ) {
+        let key = DataKey::Listing(listing_id);
+        let listing: Listing = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ListingNotFound));
+
+        listing.owner.require_auth();
+
+        if let Some(swap_addr) = atomic_swap {
+            if AtomicSwapClient::new(&env, &swap_addr).has_pending_swap(&listing_id) {
+                panic_with_error!(&env, ContractError::PendingSwapExists);
+            }
+        }
+
+        // Remove from owner index
+        let idx_key = DataKey::OwnerIndex(listing.owner.clone());
+        let mut ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&idx_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        if let Some(pos) = ids.first_index_of(listing_id) {
+            ids.remove(pos);
+        }
+        env.storage().persistent().set(&idx_key, &ids);
+        env.storage().persistent().extend_ttl(
+            &idx_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        env.storage().persistent().remove(&key);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        IpDeregistered {
+            listing_id,
+            owner: listing.owner,
+        }
+        .publish(&env);
     }
 
     /// Transfer ownership of a listing to another address.
@@ -525,6 +585,132 @@ mod test {
             &Some(swap_contract_id),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deregister_listing_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+
+        client.deregister_listing(&id, &None);
+
+        assert!(client.get_listing(&id).is_none());
+        assert_eq!(client.list_by_owner(&owner).len(), 0);
+    }
+
+    #[test]
+    fn test_deregister_listing_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let result = client.try_deregister_listing(&999, &None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deregister_listing_removes_from_owner_index() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let hash = Bytes::from_slice(&env, b"QmHash");
+        let root = Bytes::from_slice(&env, b"root");
+
+        let id1 = client.register_ip(&owner, &hash, &root);
+        let id2 = client.register_ip(&owner, &hash, &root);
+
+        client.deregister_listing(&id1, &None);
+
+        let ids = client.list_by_owner(&owner);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids.get(0).unwrap(), id2);
+    }
+
+    #[test]
+    fn test_deregister_listing_rejected_when_pending_swap_exists() {
+        use atomic_swap::{AtomicSwap, AtomicSwapClient};
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let registry_id = env.register(IpRegistry, ());
+        let registry = IpRegistryClient::new(&env, &registry_id);
+        let owner = Address::generate(&env);
+        let listing_id = registry.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+
+        let buyer = Address::generate(&env);
+        let usdc_admin = Address::generate(&env);
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(usdc_admin)
+            .address();
+        token::StellarAssetClient::new(&env, &usdc_id).mint(&buyer, &1000);
+
+        let swap_contract_id = env.register(AtomicSwap, ());
+        let swap_client = AtomicSwapClient::new(&env, &swap_contract_id);
+        swap_client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &120u64,
+        );
+
+        swap_client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &owner,
+            &usdc_id,
+            &500,
+            &Address::generate(&env),
+            &registry_id,
+        );
+
+        let result = registry.try_deregister_listing(&listing_id, &Some(swap_contract_id));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deregister_listing_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+
+        // Clear events from register_ip
+        let _ = env.events().all();
+        client.deregister_listing(&id, &None);
+
+        let expected = IpDeregistered {
+            listing_id: id,
+            owner: owner.clone(),
+        };
+        assert_eq!(
+            env.events().all(),
+            std::vec![expected.to_xdr(&env, &contract_id)]
+        );
     }
 
     #[test]
