@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Bytes, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
 
@@ -23,85 +23,99 @@ pub struct ZkVerifier;
 #[contractimpl]
 impl ZkVerifier {
     /// Store the Merkle root for a listing. Only the listing owner can set or overwrite it.
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The contract environment.
     /// * `owner` - The address of the caller/listing owner.
     /// * `listing_id` - The ID of the corresponding listing.
     /// * `root` - The root hash (`BytesN<32>`) of the Merkle tree representing the proof.
-    /// 
+    ///
     /// # Returns
     /// This function does not return a value.
-    /// 
+    ///
     /// # Panics
     /// * Panics if the caller is not the specified `owner`.
     /// * Panics if an `existing_owner` is already stored and does not match the caller `owner`.
     pub fn set_merkle_root(env: Env, owner: Address, listing_id: u64, root: BytesN<32>) {
         owner.require_auth();
         let owner_key = DataKey::Owner(listing_id);
-        if let Some(existing_owner) = env.storage().persistent().get::<DataKey, Address>(&owner_key) {
-            assert!(existing_owner == owner, "unauthorized: caller is not the listing owner");
+        if let Some(existing_owner) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&owner_key)
+        {
+            assert!(
+                existing_owner == owner,
+                "unauthorized: caller is not the listing owner"
+            );
         } else {
             env.storage().persistent().set(&owner_key, &owner);
-            env.storage().persistent().extend_ttl(&owner_key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &owner_key,
+                PERSISTENT_TTL_LEDGERS,
+                PERSISTENT_TTL_LEDGERS,
+            );
         }
         let key = DataKey::MerkleRoot(listing_id);
         env.storage().persistent().set(&key, &root);
-        env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
-        env.storage().instance().extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
     }
 
     /// Retrieves the stored Merkle root for a given listing.
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The contract environment.
     /// * `listing_id` - The ID of the listing.
-    /// 
+    ///
     /// # Returns
-    /// Returns the stored Merkle root as `BytesN<32>`.
-    /// 
-    /// # Panics
-    /// * Panics if the root is not found in persistent storage.
-    pub fn get_merkle_root(env: Env, listing_id: u64) -> BytesN<32> {
+    /// Returns `Some(BytesN<32>)` if a root exists, otherwise `None`.
+    pub fn get_merkle_root(env: Env, listing_id: u64) -> Option<BytesN<32>> {
         env.storage()
             .persistent()
             .get(&DataKey::MerkleRoot(listing_id))
-            .expect("root not found")
-    pub fn get_merkle_root(env: Env, listing_id: u64) -> Option<BytesN<32>> {
-        env.storage().persistent().get(&DataKey::MerkleRoot(listing_id))
     }
 
     /// Verify a Merkle inclusion proof for a leaf against the stored root.
-    /// 
+    ///
     /// This function checks if a given piece of data (`leaf`) is part of the Merkle tree
     /// associated with the specified `listing_id`. It cryptographically guarantees that the
     /// data piece belongs to the expected dataset without revealing the entire set.
-    /// 
+    ///
     /// # Security Implications
     /// * **Authentication:** Relies on the previously stored Merkle root, which must have been
     ///   securely set by the verified owner.
     /// * **Format Vulnerability:** Assumes standard SHA-256 concatenation. The input leaves must
     ///   be appropriately pre-hashed (or length-prefixed) in upstream processes to prevent second
     ///   preimage attacks typical in naive Merkle tree constructions.
-    /// 
+    ///
     /// # Execution Note
-    /// Due to missing direct array manipulation primitives in some Soroban SDK operations, 
+    /// Due to missing direct array manipulation primitives in some Soroban SDK operations,
     /// path components (sibling hashes) are appended safely using byte extensions.
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The contract environment.
     /// * `listing_id` - The ID of the listing representing the Merkle tree.
     /// * `leaf` - The unhashed leaf data to verify.
     /// * `path` - A `Vec<ProofNode>` representing the inclusion path. Each `ProofNode` contains
     ///   the `sibling` hash (`BytesN<32>`) and an `is_left` boolean flag dictating order.
-    /// 
+    ///
     /// # Returns
     /// Returns `true` if the computed root exactly matches the stored root; otherwise, returns `false`.
-    /// 
+    ///
     /// # Panics
     /// * Panics if the stored Merkle root for `listing_id` is missing.
     /// * May panic on internal memory allocation limits during byte reconstruction.
-    pub fn verify_partial_proof(env: Env, listing_id: u64, leaf: Bytes, path: Vec<ProofNode>) -> bool {
+    pub fn verify_partial_proof(
+        env: Env,
+        listing_id: u64,
+        leaf: Bytes,
+        path: Vec<ProofNode>,
+    ) -> bool {
         let root: BytesN<32> = env
             .storage()
             .persistent()
@@ -127,7 +141,10 @@ impl ZkVerifier {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Bytes, Env, Vec};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger as _},
+        Bytes, Env, Vec,
+    };
 
     #[test]
     fn test_get_merkle_root_missing_returns_none() {
@@ -188,7 +205,10 @@ mod test {
 
         client.set_merkle_root(&owner, &1u64, &root);
 
-        let fake_root: BytesN<32> = env.crypto().sha256(&Bytes::from_slice(&env, b"fake")).into();
+        let fake_root: BytesN<32> = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, b"fake"))
+            .into();
         client.set_merkle_root(&attacker, &1u64, &fake_root);
     }
 }
