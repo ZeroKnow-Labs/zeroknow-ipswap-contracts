@@ -94,6 +94,14 @@ pub struct SwapCancelled {
     pub usdc_amount: i128,
 }
 
+/// Emitted when a swap is completed and funds are released to the seller.
+#[contractevent]
+pub struct SwapCompleted {
+    #[topic]
+    pub swap_id: u64,
+    pub seller: Address,
+}
+
 #[contract]
 pub struct AtomicSwap;
 
@@ -339,8 +347,14 @@ pub fn unpause(env: Env) {
 
         SwapConfirmed {
             swap_id,
-            seller: swap.seller,
+            seller: swap.seller.clone(),
             decryption_key,
+        }
+        .publish(&env);
+
+        SwapCompleted {
+            swap_id,
+            seller: swap.seller,
         }
         .publish(&env);
     }
@@ -553,6 +567,49 @@ mod test {
         // fee = 500 * 100 / 10000 = 5; seller gets 495
         assert_eq!(usdc_client.balance(&seller), 495);
         assert_eq!(usdc_client.balance(&fee_recipient), 5);
+    }
+
+    #[test]
+    fn test_swap_completed_event_emitted_on_confirmation() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let (registry_id, listing_id) = setup_registry(&env, &seller);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        client.initialize(&Address::generate(&env), &100u32, &fee_recipient, &60u64);
+
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+
+        client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"secret-key"));
+
+        // The #[contractevent] macro emits topics as [Symbol("SwapCompleted"), <topic fields>...]
+        // and data as the non-topic fields. Assert the SwapCompleted event was emitted.
+        let events = env.events().all();
+        let found = events.iter().any(|(emitting_contract, topics, _data)| {
+            emitting_contract == contract_id
+                && topics.len() == 2
+                && topics.get_unchecked(0)
+                    == soroban_sdk::Symbol::new(&env, "SwapCompleted").into()
+                && topics.get_unchecked(1) == swap_id.into()
+        });
+        assert!(found, "SwapCompleted event was not emitted");
     }
 
     #[test]
