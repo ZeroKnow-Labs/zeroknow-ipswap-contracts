@@ -112,6 +112,68 @@ impl IpRegistry {
             .get(&DataKey::OwnerIndex(owner))
             .unwrap_or_else(|| Vec::new(&env))
     }
+
+    /// Transfer ownership of a listing to another address.
+    pub fn transfer_listing(env: Env, listing_id: u64, new_owner: Address) {
+        let key = DataKey::Listing(listing_id);
+        let mut listing: Listing = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ListingNotFound));
+
+        listing.owner.require_auth();
+        let old_owner = listing.owner.clone();
+
+        if old_owner == new_owner {
+            return;
+        }
+
+        // Update listing owner
+        listing.owner = new_owner.clone();
+        env.storage().persistent().set(&key, &listing);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        // Update old owner index
+        let old_idx_key = DataKey::OwnerIndex(old_owner.clone());
+        let mut old_ids: Vec<u64> = env.storage().persistent().get(&old_idx_key).unwrap();
+        if let Some(pos) = old_ids.first_index_of(listing_id) {
+            old_ids.remove(pos);
+        }
+        env.storage().persistent().set(&old_idx_key, &old_ids);
+        env.storage().persistent().extend_ttl(
+            &old_idx_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        // Update new owner index
+        let new_idx_key = DataKey::OwnerIndex(new_owner.clone());
+        let mut new_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&new_idx_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        new_ids.push_back(listing_id);
+        env.storage().persistent().set(&new_idx_key, &new_ids);
+        env.storage().persistent().extend_ttl(
+            &new_idx_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
+
+        // Emit transfer event
+        env.events().publish(
+            (soroban_sdk::symbol_short!("transfer"), listing_id),
+            (old_owner, new_owner),
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+    }
 }
 
 #[cfg(test)]
