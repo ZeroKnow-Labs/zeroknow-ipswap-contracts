@@ -1,7 +1,8 @@
 #![no_std]
 use soroban_poseidon::poseidon_hash;
 use soroban_sdk::{
-    contract, contractimpl, contracttype, crypto::BnScalar, Address, Bytes, BytesN, Env, U256, Vec,
+    contract, contractevent, contractimpl, contracttype, crypto::BnScalar, Address, Bytes, BytesN,
+    Env, U256, Vec,
 };
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -20,6 +21,24 @@ pub enum DataKey {
     Owner(u64),
 }
 
+/// Emitted when a Merkle root is stored for a listing.
+#[contractevent]
+pub struct MerkleRootSet {
+    #[topic]
+    pub listing_id: u64,
+    #[topic]
+    pub owner: Address,
+    pub root: BytesN<32>,
+}
+
+/// Emitted when a partial proof is verified.
+#[contractevent]
+pub struct ProofVerified {
+    #[topic]
+    pub listing_id: u64,
+    pub result: bool,
+}
+
 #[contract]
 pub struct ZkVerifier;
 
@@ -31,7 +50,6 @@ fn bytesn_to_u256(env: &Env, b: &BytesN<32>) -> U256 {
 /// Convert a `U256` to a `BytesN<32>` (big-endian, zero-padded).
 fn u256_to_bytesn(env: &Env, u: &U256) -> BytesN<32> {
     let be: Bytes = u.to_be_bytes();
-    // to_be_bytes may return fewer than 32 bytes for small values; left-pad with zeros.
     let len = be.len();
     if len == 32 {
         be.try_into().unwrap()
@@ -58,7 +76,6 @@ fn poseidon2(env: &Env, a: U256, b: U256) -> U256 {
 }
 
 /// Interpret raw bytes as a field element by zero-padding to 32 bytes (big-endian U256).
-/// Callers must ensure the value is < BN254 field modulus.
 fn bytes_to_field(env: &Env, b: &Bytes) -> U256 {
     let len = b.len();
     if len == 32 {
@@ -104,6 +121,13 @@ impl ZkVerifier {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        MerkleRootSet {
+            listing_id,
+            owner,
+            root,
+        }
+        .publish(&env);
     }
 
     /// Retrieves the stored Merkle root for a given listing.
@@ -116,20 +140,6 @@ impl ZkVerifier {
     /// Verify a Merkle inclusion proof for a leaf against the stored root using Poseidon hashing.
     ///
     /// Compatible with off-chain Poseidon (circom/iden3) proof generators over BN254.
-    /// The leaf bytes are interpreted as a big-endian field element and hashed with
-    /// Poseidon(t=2). Each path step combines two field elements with Poseidon(t=3).
-    ///
-    /// # Arguments
-    /// * `env` - The contract environment.
-    /// * `listing_id` - The ID of the listing representing the Merkle tree.
-    /// * `leaf` - The raw leaf data (interpreted as a big-endian field element).
-    /// * `path` - A `Vec<ProofNode>` representing the inclusion path.
-    ///
-    /// # Returns
-    /// `true` if the computed root matches the stored root; otherwise `false`.
-    ///
-    /// # Panics
-    /// * Panics if the stored Merkle root for `listing_id` is missing.
     pub fn verify_partial_proof(
         env: Env,
         listing_id: u64,
@@ -142,43 +152,41 @@ impl ZkVerifier {
             .get(&DataKey::MerkleRoot(listing_id))
             .expect("root not found");
 
-        // Hash the leaf as a single field element via Poseidon(t=2).
         let leaf_fe = bytes_to_field(&env, &leaf);
         let mut current: U256 = poseidon1(&env, leaf_fe);
 
-        // Traverse the proof path, combining with each sibling via Poseidon(t=3).
         for node in path.iter() {
             let sibling = bytesn_to_u256(&env, &node.sibling);
             current = if node.is_left {
-                // sibling is left, current is right
                 poseidon2(&env, sibling, current)
             } else {
-                // current is left, sibling is right
                 poseidon2(&env, current, sibling)
             };
         }
 
-        let computed_root = u256_to_bytesn(&env, &current);
-        computed_root == root
+        let result = u256_to_bytesn(&env, &current) == root;
+
+        ProofVerified { listing_id, result }.publish(&env);
+
+        result
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    extern crate std;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
-        Bytes, Env, Vec,
+        testutils::{Address as _, Events as _, Ledger as _},
+        Bytes, Env, Event, Vec,
     };
 
-    /// Compute Poseidon(leaf_bytes) as a BytesN<32> — mirrors verify_partial_proof leaf hashing.
     fn poseidon_leaf(env: &Env, leaf: &Bytes) -> BytesN<32> {
         let fe = bytes_to_field(env, leaf);
         let h = poseidon1(env, fe);
         u256_to_bytesn(env, &h)
     }
 
-    /// Compute Poseidon(left, right) as a BytesN<32> — mirrors path node hashing.
     fn poseidon_pair(env: &Env, left: &BytesN<32>, right: &BytesN<32>) -> BytesN<32> {
         let l = bytesn_to_u256(env, left);
         let r = bytesn_to_u256(env, right);
@@ -205,13 +213,62 @@ mod test {
 
         let owner = Address::generate(&env);
         let leaf = Bytes::from_slice(&env, b"gear_ratio:3:1");
-        // Root for a single-leaf tree is Poseidon(leaf).
         let root = poseidon_leaf(&env, &leaf);
 
         client.set_merkle_root(&owner, &1u64, &root);
 
         let path: Vec<ProofNode> = Vec::new(&env);
         assert!(client.verify_partial_proof(&1u64, &leaf, &path));
+    }
+
+    #[test]
+    fn test_set_merkle_root_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let leaf = Bytes::from_slice(&env, b"gear_ratio:3:1");
+        let root = poseidon_leaf(&env, &leaf);
+
+        client.set_merkle_root(&owner, &1u64, &root);
+
+        let expected = MerkleRootSet {
+            listing_id: 1u64,
+            owner: owner.clone(),
+            root: root.clone(),
+        };
+        assert_eq!(
+            env.events().all(),
+            std::vec![expected.to_xdr(&env, &contract_id)]
+        );
+    }
+
+    #[test]
+    fn test_verify_partial_proof_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let leaf = Bytes::from_slice(&env, b"gear_ratio:3:1");
+        let root = poseidon_leaf(&env, &leaf);
+        client.set_merkle_root(&owner, &1u64, &root);
+
+        let path: Vec<ProofNode> = Vec::new(&env);
+        let result = client.verify_partial_proof(&1u64, &leaf, &path);
+        assert!(result);
+
+        // The last event should be the ProofVerified event.
+        let all = env.events().all().filter_by_contract(&contract_id);
+        let last = all.events().last().unwrap().clone();
+        let expected = ProofVerified {
+            listing_id: 1u64,
+            result: true,
+        };
+        assert_eq!(std::vec![last], std::vec![expected.to_xdr(&env, &contract_id)]);
     }
 
     #[test]
@@ -260,10 +317,6 @@ mod test {
 
         let owner = Address::generate(&env);
 
-        // Build a 2-leaf Poseidon Merkle tree:
-        //       root = Poseidon(h0, h1)
-        //      /                      \
-        //  h0 = Poseidon(leaf0)    h1 = Poseidon(leaf1)
         let leaf0 = Bytes::from_slice(&env, b"leaf_zero");
         let leaf1 = Bytes::from_slice(&env, b"leaf_one");
         let h0 = poseidon_leaf(&env, &leaf0);
@@ -272,23 +325,15 @@ mod test {
 
         client.set_merkle_root(&owner, &2u64, &root);
 
-        // Prove leaf0 (index 0, sibling h1 is on the right → is_left = false)
         let path0: Vec<ProofNode> = soroban_sdk::vec![
             &env,
-            ProofNode {
-                sibling: h1.clone(),
-                is_left: false,
-            }
+            ProofNode { sibling: h1.clone(), is_left: false }
         ];
         assert!(client.verify_partial_proof(&2u64, &leaf0, &path0));
 
-        // Prove leaf1 (index 1, sibling h0 is on the left → is_left = true)
         let path1: Vec<ProofNode> = soroban_sdk::vec![
             &env,
-            ProofNode {
-                sibling: h0.clone(),
-                is_left: true,
-            }
+            ProofNode { sibling: h0.clone(), is_left: true }
         ];
         assert!(client.verify_partial_proof(&2u64, &leaf1, &path1));
     }

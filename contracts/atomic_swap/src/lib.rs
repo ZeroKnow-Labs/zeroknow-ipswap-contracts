@@ -1,8 +1,8 @@
 #![no_std]
 use ip_registry::IpRegistryClient;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Bytes,
-    Env,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token,
+    Address, Bytes, Env,
 };
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -56,6 +56,36 @@ pub enum DataKey {
     Config,
     Admin,
     Paused,
+}
+
+/// Emitted when a buyer initiates a swap.
+#[contractevent]
+pub struct SwapInitiated {
+    #[topic]
+    pub swap_id: u64,
+    #[topic]
+    pub listing_id: u64,
+    pub buyer: Address,
+    pub seller: Address,
+    pub usdc_amount: i128,
+}
+
+/// Emitted when a seller confirms a swap and releases the decryption key.
+#[contractevent]
+pub struct SwapConfirmed {
+    #[topic]
+    pub swap_id: u64,
+    pub seller: Address,
+    pub decryption_key: Bytes,
+}
+
+/// Emitted when a buyer cancels an expired swap and reclaims USDC.
+#[contractevent]
+pub struct SwapCancelled {
+    #[topic]
+    pub swap_id: u64,
+    pub buyer: Address,
+    pub usdc_amount: i128,
 }
 
 #[contract]
@@ -189,7 +219,7 @@ impl AtomicSwap {
             &Swap {
                 listing_id,
                 buyer: buyer.clone(),
-                seller,
+                seller: seller.clone(),
                 usdc_amount,
                 usdc_token,
                 zk_verifier,
@@ -226,6 +256,15 @@ impl AtomicSwap {
             PERSISTENT_TTL_LEDGERS,
             PERSISTENT_TTL_LEDGERS,
         );
+
+        SwapInitiated {
+            swap_id: id,
+            listing_id,
+            buyer: buyer.clone(),
+            seller: seller.clone(),
+            usdc_amount,
+        }
+        .publish(&env);
 
         id
     }
@@ -282,7 +321,7 @@ impl AtomicSwap {
         }
 
         swap.status = SwapStatus::Completed;
-        swap.decryption_key = Some(decryption_key);
+        swap.decryption_key = Some(decryption_key.clone());
         env.storage().persistent().set(&key, &swap);
         env.storage()
             .persistent()
@@ -290,6 +329,13 @@ impl AtomicSwap {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        SwapConfirmed {
+            swap_id,
+            seller: swap.seller,
+            decryption_key,
+        }
+        .publish(&env);
     }
 
     /// Buyer cancels and reclaims USDC if seller never confirms.
@@ -332,6 +378,13 @@ impl AtomicSwap {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        SwapCancelled {
+            swap_id,
+            buyer: swap.buyer,
+            usdc_amount: swap.usdc_amount,
+        }
+        .publish(&env);
     }
 
     /// Retrieves the current status of a given swap.
@@ -383,10 +436,11 @@ impl AtomicSwap {
 #[cfg(test)]
 mod test {
     use super::*;
+    extern crate std;
     use ip_registry::{IpRegistry, IpRegistryClient};
     use soroban_sdk::{
-        testutils::{Address as _, Ledger},
-        token, Bytes, Env,
+        testutils::{Address as _, Events as _, Ledger},
+        token, Bytes, Env, Event,
     };
 
     fn setup_registry(env: &Env, seller: &Address) -> (Address, u64) {
@@ -1138,5 +1192,120 @@ mod test {
             &registry_id,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_initiate_swap_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+
+        let (usdc_id, listing_id, registry_id, contract_id, client) =
+            setup_swap_env(&env, &buyer, &seller, 500);
+
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+
+        let expected = SwapInitiated {
+            swap_id,
+            listing_id,
+            buyer: buyer.clone(),
+            seller: seller.clone(),
+            usdc_amount: 500,
+        };
+        assert_eq!(
+            env.events().all().filter_by_contract(&contract_id),
+            std::vec![expected.to_xdr(&env, &contract_id)]
+        );
+    }
+
+    #[test]
+    fn test_confirm_swap_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+
+        let (usdc_id, listing_id, registry_id, contract_id, client) =
+            setup_swap_env(&env, &buyer, &seller, 500);
+
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+
+        let key = Bytes::from_slice(&env, b"secret-key");
+        client.confirm_swap(&swap_id, &key);
+
+        let all = env.events().all().filter_by_contract(&contract_id);
+        let last = all.events().last().unwrap().clone();
+        let expected = SwapConfirmed {
+            swap_id,
+            seller: seller.clone(),
+            decryption_key: key,
+        };
+        assert_eq!(std::vec![last], std::vec![expected.to_xdr(&env, &contract_id)]);
+    }
+
+    #[test]
+    fn test_cancel_swap_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let (registry_id, listing_id) = setup_registry(&env, &seller);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+        );
+
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+
+        env.ledger()
+            .with_mut(|li| li.timestamp = li.timestamp.saturating_add(61));
+        client.cancel_swap(&swap_id);
+
+        let all = env.events().all().filter_by_contract(&contract_id);
+        let last = all.events().last().unwrap().clone();
+        let expected = SwapCancelled {
+            swap_id,
+            buyer: buyer.clone(),
+            usdc_amount: 500,
+        };
+        assert_eq!(std::vec![last], std::vec![expected.to_xdr(&env, &contract_id)]);
     }
 }

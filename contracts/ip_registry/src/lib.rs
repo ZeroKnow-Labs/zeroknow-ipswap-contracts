@@ -1,6 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Bytes, Env, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
+    Bytes, Env, Vec,
 };
 
 #[contracterror]
@@ -27,6 +28,17 @@ pub enum DataKey {
     OwnerIndex(Address),
 }
 
+/// Emitted when a new IP listing is registered.
+#[contractevent]
+pub struct IpRegistered {
+    #[topic]
+    pub listing_id: u64,
+    #[topic]
+    pub owner: Address,
+    pub ipfs_hash: Bytes,
+    pub merkle_root: Bytes,
+}
+
 #[contract]
 pub struct IpRegistry;
 
@@ -49,8 +61,8 @@ impl IpRegistry {
             &key,
             &Listing {
                 owner: owner.clone(),
-                ipfs_hash,
-                merkle_root,
+                ipfs_hash: ipfs_hash.clone(),
+                merkle_root: merkle_root.clone(),
             },
         );
         env.storage()
@@ -74,17 +86,19 @@ impl IpRegistry {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        IpRegistered {
+            listing_id: id,
+            owner,
+            ipfs_hash,
+            merkle_root,
+        }
+        .publish(&env);
+
         id
     }
 
     /// Retrieves a specific IP listing by its ID.
-    ///
-    /// # Arguments
-    /// * `env` - The contract environment.
-    /// * `listing_id` - The ID of the listing to retrieve.
-    ///
-    /// # Returns
-    /// Returns `Some(Listing)` if found, otherwise `None`.
     pub fn get_listing(env: Env, listing_id: u64) -> Option<Listing> {
         env.storage()
             .persistent()
@@ -92,16 +106,6 @@ impl IpRegistry {
     }
 
     /// Retrieves all listing IDs owned by a specific address.
-    ///
-    /// # Arguments
-    /// * `env` - The contract environment.
-    /// * `owner` - The address of the owner.
-    ///
-    /// # Returns
-    /// Returns a `Vec<u64>` containing all listing IDs associated with the specified owner.
-    ///
-    /// # Panics
-    /// This view function does not panic under normal conditions, but will panic if internal persistent loading fails for an existing ID.
     pub fn list_by_owner(env: Env, owner: Address) -> Vec<u64> {
         env.storage()
             .persistent()
@@ -113,9 +117,10 @@ impl IpRegistry {
 #[cfg(test)]
 mod test {
     use super::*;
+    extern crate std;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
-        Env,
+        testutils::{Address as _, Events as _, Ledger as _},
+        Env, Event,
     };
 
     #[test]
@@ -134,6 +139,31 @@ mod test {
 
         let listing = client.get_listing(&id).expect("listing should exist");
         assert_eq!(listing.owner, owner);
+    }
+
+    #[test]
+    fn test_register_ip_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let hash = Bytes::from_slice(&env, b"QmTestHash");
+        let root = Bytes::from_slice(&env, b"merkle_root_bytes");
+
+        let id = client.register_ip(&owner, &hash, &root);
+
+        let expected = IpRegistered {
+            listing_id: id,
+            owner: owner.clone(),
+            ipfs_hash: hash,
+            merkle_root: root,
+        };
+        assert_eq!(
+            env.events().all(),
+            std::vec![expected.to_xdr(&env, &contract_id)]
+        );
     }
 
     #[test]
@@ -233,7 +263,6 @@ mod test {
         let contract_id = env.register(IpRegistry, ());
         let client = IpRegistryClient::new(&env, &contract_id);
 
-        // Manually set the counter to u64::MAX to simulate overflow on next increment.
         env.as_contract(&contract_id, || {
             env.storage()
                 .instance()
