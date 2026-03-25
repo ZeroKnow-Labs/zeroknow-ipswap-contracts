@@ -23,6 +23,19 @@ pub struct ZkVerifier;
 #[contractimpl]
 impl ZkVerifier {
     /// Store the Merkle root for a listing. Only the listing owner can set or overwrite it.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment.
+    /// * `owner` - The address of the caller/listing owner.
+    /// * `listing_id` - The ID of the corresponding listing.
+    /// * `root` - The root hash (`BytesN<32>`) of the Merkle tree representing the proof.
+    ///
+    /// # Returns
+    /// This function does not return a value.
+    ///
+    /// # Panics
+    /// * Panics if the caller is not the specified `owner`.
+    /// * Panics if an `existing_owner` is already stored and does not match the caller `owner`.
     pub fn set_merkle_root(env: Env, owner: Address, listing_id: u64, root: BytesN<32>) {
         owner.require_auth();
         let owner_key = DataKey::Owner(listing_id);
@@ -53,6 +66,17 @@ impl ZkVerifier {
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
     }
 
+    /// Retrieves the stored Merkle root for a given listing.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment.
+    /// * `listing_id` - The ID of the listing.
+    ///
+    /// # Returns
+    /// Returns the stored Merkle root as `BytesN<32>`.
+    ///
+    /// # Panics
+    /// * Panics if the root is not found in persistent storage.
     pub fn get_merkle_root(env: Env, listing_id: u64) -> Option<BytesN<32>> {
         env.storage()
             .persistent()
@@ -60,6 +84,9 @@ impl ZkVerifier {
     }
 
     /// Verify a Merkle inclusion proof for a leaf against the stored root.
+    ///
+    /// # Panics
+    /// * Panics if the stored Merkle root for `listing_id` is missing.
     pub fn verify_partial_proof(
         env: Env,
         listing_id: u64,
