@@ -308,7 +308,7 @@ impl AtomicSwap {
             .storage()
             .persistent()
             .get(&key)
-            .expect("swap not found");
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::SwapNotFound));
         assert!(swap.status == SwapStatus::Pending, "swap not pending");
         assert!(
             env.ledger().timestamp() >= swap.expires_at,
@@ -1014,6 +1014,22 @@ mod test {
             &zk_verifier,
             &registry_id,
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_cancel_swap_nonexistent() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &120u64,
+        );
+        client.cancel_swap(&9999u64);
     }
 
     #[test]
