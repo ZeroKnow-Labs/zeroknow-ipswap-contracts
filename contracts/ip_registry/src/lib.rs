@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    Bytes, Env, Vec,
+    contract, contracterror, contractclient, contractevent, contractimpl, contracttype,
+    panic_with_error, Address, Bytes, Env, Vec,
 };
 
 #[contracterror]
@@ -9,6 +9,14 @@ use soroban_sdk::{
 pub enum ContractError {
     InvalidInput = 1,
     CounterOverflow = 2,
+    ListingNotFound = 3,
+    PendingSwapExists = 4,
+}
+
+/// Minimal interface to check for a pending swap on a listing.
+#[contractclient(name = "AtomicSwapClient")]
+pub trait AtomicSwapInterface {
+    fn has_pending_swap(env: Env, listing_id: u64) -> bool;
 }
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -113,6 +121,44 @@ impl IpRegistry {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Update ipfs_hash and/or merkle_root of an existing listing.
+    /// Requires owner auth. Rejects if a pending swap exists for the listing.
+    pub fn update_listing(
+        env: Env,
+        listing_id: u64,
+        new_ipfs_hash: Bytes,
+        new_merkle_root: Bytes,
+        atomic_swap: Option<Address>,
+    ) {
+        if new_ipfs_hash.is_empty() || new_merkle_root.is_empty() {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        let key = DataKey::Listing(listing_id);
+        let mut listing: Listing = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ListingNotFound));
+
+        listing.owner.require_auth();
+
+        if let Some(swap_addr) = atomic_swap {
+            if AtomicSwapClient::new(&env, &swap_addr).has_pending_swap(&listing_id) {
+                panic_with_error!(&env, ContractError::PendingSwapExists);
+            }
+        }
+
+        listing.ipfs_hash = new_ipfs_hash;
+        listing.merkle_root = new_merkle_root;
+        env.storage().persistent().set(&key, &listing);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+    }
+
     /// Transfer ownership of a listing to another address.
     pub fn transfer_listing(env: Env, listing_id: u64, new_owner: Address) {
         let key = DataKey::Listing(listing_id);
@@ -182,7 +228,7 @@ mod test {
     extern crate std;
     use soroban_sdk::{
         testutils::{Address as _, Events as _, Ledger as _},
-        Env, Event,
+        token, Env, Event,
     };
 
     #[test]
@@ -338,5 +384,200 @@ mod test {
             &Bytes::from_slice(&env, b"root"),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_listing_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmOldHash"),
+            &Bytes::from_slice(&env, b"old_root"),
+        );
+
+        let new_hash = Bytes::from_slice(&env, b"QmNewHash");
+        let new_root = Bytes::from_slice(&env, b"new_root");
+        client.update_listing(&id, &new_hash, &new_root, &None);
+
+        let listing = client.get_listing(&id).unwrap();
+        assert_eq!(listing.ipfs_hash, new_hash);
+        assert_eq!(listing.merkle_root, new_root);
+    }
+
+    #[test]
+    fn test_update_listing_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let result = client.try_update_listing(
+            &999,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_listing_rejects_empty_hash() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+
+        let result = client.try_update_listing(
+            &id,
+            &Bytes::new(&env),
+            &Bytes::from_slice(&env, b"root"),
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_listing_rejects_empty_merkle_root() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+
+        let result = client.try_update_listing(
+            &id,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::new(&env),
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_listing_rejected_when_pending_swap_exists() {
+        use atomic_swap::{AtomicSwap, AtomicSwapClient};
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        // Register listing
+        let registry_id = env.register(IpRegistry, ());
+        let registry = IpRegistryClient::new(&env, &registry_id);
+        let owner = Address::generate(&env);
+        let listing_id = registry.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+
+        // Set up USDC and buyer
+        let buyer = Address::generate(&env);
+        let usdc_admin = Address::generate(&env);
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(usdc_admin)
+            .address();
+        token::StellarAssetClient::new(&env, &usdc_id).mint(&buyer, &1000);
+
+        // Set up AtomicSwap
+        let swap_contract_id = env.register(AtomicSwap, ());
+        let swap_client = AtomicSwapClient::new(&env, &swap_contract_id);
+        swap_client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &120u64,
+        );
+
+        // Initiate a pending swap
+        swap_client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &owner,
+            &usdc_id,
+            &500,
+            &Address::generate(&env),
+            &registry_id,
+        );
+
+        // update_listing should be rejected because a pending swap exists
+        let result = registry.try_update_listing(
+            &listing_id,
+            &Bytes::from_slice(&env, b"QmNewHash"),
+            &Bytes::from_slice(&env, b"new_root"),
+            &Some(swap_contract_id),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_listing_allowed_after_swap_completed() {
+        use atomic_swap::{AtomicSwap, AtomicSwapClient};
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let registry_id = env.register(IpRegistry, ());
+        let registry = IpRegistryClient::new(&env, &registry_id);
+        let owner = Address::generate(&env);
+        let listing_id = registry.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+
+        let buyer = Address::generate(&env);
+        let usdc_admin = Address::generate(&env);
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(usdc_admin)
+            .address();
+        token::StellarAssetClient::new(&env, &usdc_id).mint(&buyer, &1000);
+
+        let swap_contract_id = env.register(AtomicSwap, ());
+        let swap_client = AtomicSwapClient::new(&env, &swap_contract_id);
+        swap_client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &120u64,
+        );
+
+        let swap_id = swap_client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &owner,
+            &usdc_id,
+            &500,
+            &Address::generate(&env),
+            &registry_id,
+        );
+        // Complete the swap
+        swap_client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"key"));
+
+        // Now update should succeed — no pending swap
+        let new_hash = Bytes::from_slice(&env, b"QmNewHash");
+        let new_root = Bytes::from_slice(&env, b"new_root");
+        registry.update_listing(&listing_id, &new_hash, &new_root, &Some(swap_contract_id));
+
+        let listing = registry.get_listing(&listing_id).unwrap();
+        assert_eq!(listing.ipfs_hash, new_hash);
+        assert_eq!(listing.merkle_root, new_root);
     }
 }

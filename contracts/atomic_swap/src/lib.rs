@@ -1,8 +1,8 @@
 #![no_std]
 use ip_registry::IpRegistryClient;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
-    Address, Bytes, Env,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error,
+    symbol_short, token, Address, Bytes, Env,
 };
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -19,6 +19,7 @@ pub enum ContractError {
     SwapAlreadyPending = 7,
     SellerMismatch = 8,
     SwapNotCancellable = 9,
+    CounterOverflow = 10,
 }
 
 #[contracttype]
@@ -432,6 +433,24 @@ pub fn unpause(env: Env) {
             .persistent()
             .get::<DataKey, Swap>(&DataKey::Swap(swap_id))
             .and_then(|swap| swap.decryption_key)
+    }
+
+    /// Returns true if there is a pending swap for the given listing_id.
+    pub fn has_pending_swap(env: Env, listing_id: u64) -> bool {
+        if let Some(swap_id) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u64>(&DataKey::ActiveListingSwap(listing_id))
+        {
+            if let Some(swap) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Swap>(&DataKey::Swap(swap_id))
+            {
+                return swap.status == SwapStatus::Pending;
+            }
+        }
+        false
     }
 
     /// Returns all swap IDs initiated by the given buyer, in insertion order.
