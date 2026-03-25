@@ -38,11 +38,8 @@ impl ZkVerifier {
         env.storage().instance().extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
     }
 
-    pub fn get_merkle_root(env: Env, listing_id: u64) -> BytesN<32> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::MerkleRoot(listing_id))
-            .expect("root not found")
+    pub fn get_merkle_root(env: Env, listing_id: u64) -> Option<BytesN<32>> {
+        env.storage().persistent().get(&DataKey::MerkleRoot(listing_id))
     }
 
     /// Verify a Merkle inclusion proof for a leaf against the stored root.
@@ -75,6 +72,16 @@ mod test {
     use soroban_sdk::{testutils::{Address as _, Ledger as _}, Bytes, Env, Vec};
 
     #[test]
+    fn test_get_merkle_root_missing_returns_none() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        assert_eq!(client.get_merkle_root(&99u64), None);
+    }
+
+    #[test]
     fn test_single_leaf_proof() {
         let env = Env::default();
         env.mock_all_auths();
@@ -105,7 +112,7 @@ mod test {
 
         env.ledger().with_mut(|li| li.sequence_number += 5_000);
 
-        assert_eq!(client.get_merkle_root(&42u64), root);
+        assert_eq!(client.get_merkle_root(&42u64), Some(root));
     }
 
     #[test]
