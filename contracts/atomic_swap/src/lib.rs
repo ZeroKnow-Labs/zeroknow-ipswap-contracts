@@ -310,11 +310,11 @@ impl AtomicSwap {
             .get(&key)
             .expect("swap not found");
         assert!(swap.status == SwapStatus::Pending, "swap not pending");
+        swap.buyer.require_auth();
         assert!(
             env.ledger().timestamp() >= swap.expires_at,
             "swap not yet cancellable"
         );
-        swap.buyer.require_auth();
         token::Client::new(&env, &swap.usdc_token).transfer(
             &env.current_contract_address(),
             &swap.buyer,
@@ -1094,5 +1094,45 @@ mod test {
             Some(SwapStatus::Cancelled)
         );
         assert_eq!(usdc_client.balance(&buyer), 1000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_cancel_swap_rejects_non_buyer_auth() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let (registry_id, listing_id) = setup_registry(&env, &seller);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &120u64,
+        );
+
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+
+        env.ledger()
+            .with_mut(|li| li.timestamp = li.timestamp.saturating_add(121));
+
+        // Clear mocked auths so no address is authorized — require_auth() on buyer must fail
+        env.set_auths(&[]);
+        client.cancel_swap(&swap_id);
     }
 }
