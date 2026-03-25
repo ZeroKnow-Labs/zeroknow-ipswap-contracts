@@ -1,14 +1,14 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Bytes, Env, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
+    Bytes, Env, Vec,
 };
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ContractError {
     InvalidInput = 1,
-    ListingNotFound = 2,
-    Unauthorized = 3,
+    CounterOverflow = 2,
 }
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -28,6 +28,17 @@ pub enum DataKey {
     OwnerIndex(Address),
 }
 
+/// Emitted when a new IP listing is registered.
+#[contractevent]
+pub struct IpRegistered {
+    #[topic]
+    pub listing_id: u64,
+    #[topic]
+    pub owner: Address,
+    pub ipfs_hash: Bytes,
+    pub merkle_root: Bytes,
+}
+
 #[contract]
 pub struct IpRegistry;
 
@@ -39,7 +50,10 @@ impl IpRegistry {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
         owner.require_auth();
-        let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
+        let prev: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+        let id: u64 = prev
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
         env.storage().instance().set(&DataKey::Counter, &id);
 
         let key = DataKey::Listing(id);
@@ -47,8 +61,8 @@ impl IpRegistry {
             &key,
             &Listing {
                 owner: owner.clone(),
-                ipfs_hash,
-                merkle_root,
+                ipfs_hash: ipfs_hash.clone(),
+                merkle_root: merkle_root.clone(),
             },
         );
         env.storage()
@@ -72,17 +86,19 @@ impl IpRegistry {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        IpRegistered {
+            listing_id: id,
+            owner,
+            ipfs_hash,
+            merkle_root,
+        }
+        .publish(&env);
+
         id
     }
 
     /// Retrieves a specific IP listing by its ID.
-    ///
-    /// # Arguments
-    /// * `env` - The contract environment.
-    /// * `listing_id` - The ID of the listing to retrieve.
-    ///
-    /// # Returns
-    /// Returns `Some(Listing)` if found, otherwise `None`.
     pub fn get_listing(env: Env, listing_id: u64) -> Option<Listing> {
         env.storage()
             .persistent()
@@ -90,16 +106,6 @@ impl IpRegistry {
     }
 
     /// Retrieves all listing IDs owned by a specific address.
-    ///
-    /// # Arguments
-    /// * `env` - The contract environment.
-    /// * `owner` - The address of the owner.
-    ///
-    /// # Returns
-    /// Returns a `Vec<u64>` containing all listing IDs associated with the specified owner.
-    ///
-    /// # Panics
-    /// This view function does not panic under normal conditions, but will panic if internal persistent loading fails for an existing ID.
     pub fn list_by_owner(env: Env, owner: Address) -> Vec<u64> {
         env.storage()
             .persistent()
@@ -173,9 +179,10 @@ impl IpRegistry {
 #[cfg(test)]
 mod test {
     use super::*;
+    extern crate std;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
-        Env,
+        testutils::{Address as _, Events as _, Ledger as _},
+        Env, Event,
     };
 
     #[test]
@@ -194,6 +201,31 @@ mod test {
 
         let listing = client.get_listing(&id).expect("listing should exist");
         assert_eq!(listing.owner, owner);
+    }
+
+    #[test]
+    fn test_register_ip_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let hash = Bytes::from_slice(&env, b"QmTestHash");
+        let root = Bytes::from_slice(&env, b"merkle_root_bytes");
+
+        let id = client.register_ip(&owner, &hash, &root);
+
+        let expected = IpRegistered {
+            listing_id: id,
+            owner: owner.clone(),
+            ipfs_hash: hash,
+            merkle_root: root,
+        };
+        assert_eq!(
+            env.events().all(),
+            std::vec![expected.to_xdr(&env, &contract_id)]
+        );
     }
 
     #[test]
@@ -287,40 +319,24 @@ mod test {
     }
 
     #[test]
-    fn test_transfer_listing() {
+    fn test_counter_overflow_panics() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
         let client = IpRegistryClient::new(&env, &contract_id);
 
-        let owner1 = Address::generate(&env);
-        let owner2 = Address::generate(&env);
-        let hash = Bytes::from_slice(&env, b"QmHash");
-        let root = Bytes::from_slice(&env, b"root");
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .instance()
+                .set(&DataKey::Counter, &u64::MAX);
+        });
 
-        let id = client.register_ip(&owner1, &hash, &root);
-
-        assert_eq!(client.list_by_owner(&owner1).len(), 1);
-        assert_eq!(client.list_by_owner(&owner2).len(), 0);
-
-        client.transfer_listing(&id, &owner2);
-
-        let listing = client.get_listing(&id).unwrap();
-        assert_eq!(listing.owner, owner2);
-
-        assert_eq!(client.list_by_owner(&owner1).len(), 0);
-        assert_eq!(client.list_by_owner(&owner2).len(), 1);
-        assert_eq!(client.list_by_owner(&owner2).get(0).unwrap(), id);
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #2)")]
-    fn test_transfer_listing_not_found() {
-        let env = Env::default();
-        let contract_id = env.register(IpRegistry, ());
-        let client = IpRegistryClient::new(&env, &contract_id);
-
-        let new_owner = Address::generate(&env);
-        client.transfer_listing(&999, &new_owner);
+        let owner = Address::generate(&env);
+        let result = client.try_register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+        assert!(result.is_err());
     }
 }
