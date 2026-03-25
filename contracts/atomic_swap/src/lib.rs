@@ -1,18 +1,22 @@
 #![no_std]
 use ip_registry::IpRegistryClient;
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Bytes, Env};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Bytes,
+    Env,
+};
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
 
-#[contracttype]
+#[contracterror]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContractError {
-    EmptyDecryptionKey,
-    InvalidAmount,
+    EmptyDecryptionKey = 1,
+    SwapNotFound = 2,
+    InvalidAmount = 3,
 }
 
 #[contracttype]
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum SwapStatus {
     Pending,
     Completed,
@@ -123,24 +127,7 @@ impl AtomicSwap {
 
     /// Buyer initiates swap by locking USDC into the contract.
     /// Cross-calls ip_registry to verify seller owns the listing.
-    ///
-    /// # Arguments
-    /// * `env` - The contract environment.
-    /// * `listing_id` - The ID of the listing in the IP registry.
-    /// * `buyer` - The address of the buyer initiating the swap.
-    /// * `seller` - The address of the seller owning the listing.
-    /// * `usdc_token` - The address of the USDC token contract.
-    /// * `usdc_amount` - The amount of USDC to lock up.
-    /// * `zk_verifier` - The address of the zero-knowledge verifier contract.
-    /// * `ip_registry` - The address of the IP registry contract.
-    ///
-    /// # Returns
-    /// Returns the unique `u64` identifier for the newly created swap.
-    ///
-    /// # Panics
-    /// * Panics if the caller is not the `buyer`.
-    /// * Panics if the `seller` does not own the `listing_id` in the `ip_registry`.
-    /// * Panics if the token transfer fails.
+    #[allow(clippy::too_many_arguments)]
     pub fn initiate_swap(
         env: Env,
         listing_id: u64,
@@ -174,7 +161,7 @@ impl AtomicSwap {
                 .get(&DataKey::Swap(existing_swap_id))
                 .unwrap();
             assert!(
-                existing_swap.status != SwapStatus::Pending,
+                existing_swap.status != SwapStatus::Pending || existing_swap.buyer == buyer,
                 "swap already pending for this listing"
             );
         }
@@ -223,13 +210,13 @@ impl AtomicSwap {
 
         // Maintain buyer index
         let buyer_key = DataKey::BuyerIndex(buyer.clone());
-        let mut ids: soroban_sdk::Vec<u64> = env
+        let mut buyer_ids: soroban_sdk::Vec<u64> = env
             .storage()
             .persistent()
             .get(&buyer_key)
             .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
-        ids.push_back(id);
-        env.storage().persistent().set(&buyer_key, &ids);
+        buyer_ids.push_back(id);
+        env.storage().persistent().set(&buyer_key, &buyer_ids);
         env.storage().persistent().extend_ttl(
             &buyer_key,
             PERSISTENT_TTL_LEDGERS,
@@ -268,7 +255,7 @@ impl AtomicSwap {
             .storage()
             .persistent()
             .get(&key)
-            .expect("swap not found");
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::SwapNotFound));
         assert!(swap.status == SwapStatus::Pending, "swap not pending");
         swap.seller.require_auth();
 
@@ -393,7 +380,10 @@ impl AtomicSwap {
 mod test {
     use super::*;
     use ip_registry::{IpRegistry, IpRegistryClient};
-    use soroban_sdk::{testutils::Address as _, token, Bytes, Env};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger},
+        token, Bytes, Env,
+    };
 
     fn setup_registry(env: &Env, seller: &Address) -> (Address, u64) {
         let registry_id = env.register(IpRegistry, ());
@@ -421,6 +411,16 @@ mod test {
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
         assert_eq!(client.get_swap_status(&999), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_confirm_swap_returns_error_for_missing_swap() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.confirm_swap(&999, &Bytes::from_slice(&env, b"key"));
     }
 
     #[test]
@@ -666,6 +666,12 @@ mod test {
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+        );
 
         // buyer1 initiates
         client.initiate_swap(
@@ -706,6 +712,12 @@ mod test {
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+        );
 
         client.initiate_swap(
             &listing_id,
