@@ -7,6 +7,7 @@ use soroban_sdk::{
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ContractError {
     InvalidInput = 1,
+    CounterOverflow = 2,
 }
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -37,7 +38,10 @@ impl IpRegistry {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
         owner.require_auth();
-        let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
+        let prev: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+        let id: u64 = prev
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
         env.storage().instance().set(&DataKey::Counter, &id);
 
         let key = DataKey::Listing(id);
@@ -218,6 +222,29 @@ mod test {
             &owner,
             &Bytes::from_slice(&env, b"QmTestHash"),
             &Bytes::new(&env),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_counter_overflow_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        // Manually set the counter to u64::MAX to simulate overflow on next increment.
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .instance()
+                .set(&DataKey::Counter, &u64::MAX);
+        });
+
+        let owner = Address::generate(&env);
+        let result = client.try_register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
         );
         assert!(result.is_err());
     }

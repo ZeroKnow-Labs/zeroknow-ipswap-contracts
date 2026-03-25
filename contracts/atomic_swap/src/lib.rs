@@ -13,6 +13,7 @@ pub enum ContractError {
     EmptyDecryptionKey = 1,
     SwapNotFound = 2,
     InvalidAmount = 3,
+    CounterOverflow = 4,
 }
 
 #[contracttype]
@@ -177,7 +178,10 @@ impl AtomicSwap {
             &env.current_contract_address(),
             &usdc_amount,
         );
-        let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
+        let prev: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+        let id: u64 = prev
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
         env.storage().instance().set(&DataKey::Counter, &id);
         let key = DataKey::Swap(id);
         env.storage().persistent().set(
@@ -1094,5 +1098,45 @@ mod test {
             Some(SwapStatus::Cancelled)
         );
         assert_eq!(usdc_client.balance(&buyer), 1000);
+    }
+
+    #[test]
+    fn test_counter_overflow_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let (registry_id, listing_id) = setup_registry(&env, &seller);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+        );
+
+        // Manually set the counter to u64::MAX to simulate overflow on next increment.
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .instance()
+                .set(&DataKey::Counter, &u64::MAX);
+        });
+
+        let result = client.try_initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+        assert!(result.is_err());
     }
 }
