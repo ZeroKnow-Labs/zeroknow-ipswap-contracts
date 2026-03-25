@@ -415,6 +415,24 @@ pub fn unpause(env: Env) {
             .map(|swap| swap.status)
     }
 
+    /// Retrieves the full Swap struct for a given swap ID.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment.
+    /// * `swap_id` - The ID of the swap.
+    ///
+    /// # Returns
+    /// Returns `Some(Swap)` containing all swap details (buyer, seller, listing_id, amount, etc.)
+    /// if the swap exists, or `None` if it does not.
+    ///
+    /// # Panics
+    /// This view function does not panic under normal conditions.
+    pub fn get_swap(env: Env, swap_id: u64) -> Option<Swap> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Swap(swap_id))
+    }
+
     /// Returns the decryption key once the swap is completed.
     ///
     /// # Arguments
@@ -495,6 +513,55 @@ mod test {
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
         assert_eq!(client.get_swap_status(&999), None);
+    }
+
+    #[test]
+    fn test_get_swap_returns_none_for_missing_swap() {
+        let env = Env::default();
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        assert_eq!(client.get_swap(&999), None);
+    }
+
+    #[test]
+    fn test_get_swap_returns_full_swap_struct() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let (registry_id, listing_id) = setup_registry(&env, &seller);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        client.initialize(&Address::generate(&env), &100u32, &fee_recipient, &60u64);
+
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+
+        let swap = client.get_swap(&swap_id);
+        assert!(swap.is_some());
+        let swap = swap.unwrap();
+        assert_eq!(swap.listing_id, listing_id);
+        assert_eq!(swap.buyer, buyer);
+        assert_eq!(swap.seller, seller);
+        assert_eq!(swap.usdc_amount, 500);
+        assert_eq!(swap.usdc_token, usdc_id);
+        assert_eq!(swap.zk_verifier, zk_verifier);
+        assert_eq!(swap.status, SwapStatus::Pending);
+        assert!(swap.decryption_key.is_none());
     }
 
     #[test]
