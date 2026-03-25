@@ -73,10 +73,7 @@ impl ZkVerifier {
     /// * `listing_id` - The ID of the listing.
     ///
     /// # Returns
-    /// Returns the stored Merkle root as `BytesN<32>`.
-    ///
-    /// # Panics
-    /// * Panics if the root is not found in persistent storage.
+    /// Returns `Some(BytesN<32>)` if a root exists, otherwise `None`.
     pub fn get_merkle_root(env: Env, listing_id: u64) -> Option<BytesN<32>> {
         env.storage()
             .persistent()
@@ -84,9 +81,6 @@ impl ZkVerifier {
     }
 
     /// Verify a Merkle inclusion proof for a leaf against the stored root.
-    ///
-    /// # Panics
-    /// * Panics if the stored Merkle root for `listing_id` is missing.
     pub fn verify_partial_proof(
         env: Env,
         listing_id: u64,
