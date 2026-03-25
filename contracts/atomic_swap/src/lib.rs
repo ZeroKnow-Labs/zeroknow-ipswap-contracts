@@ -467,7 +467,7 @@ mod test {
     extern crate std;
     use ip_registry::{IpRegistry, IpRegistryClient};
     use soroban_sdk::{
-        testutils::{Address as _, Events, Ledger},
+        testutils::{Address as _, Ledger},
         token, Bytes, Env,
     };
 
