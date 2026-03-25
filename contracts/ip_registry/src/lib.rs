@@ -1,5 +1,11 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, Address, Bytes, Env, Vec};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ContractError {
+    InvalidInput = 1,
+}
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
 
@@ -24,6 +30,10 @@ pub struct IpRegistry;
 #[contractimpl]
 impl IpRegistry {
     /// Register a new IP listing. Returns the listing ID.
+    pub fn register_ip(env: Env, owner: Address, ipfs_hash: Bytes, merkle_root: Bytes) -> Result<u64, ContractError> {
+        if ipfs_hash.is_empty() || merkle_root.is_empty() {
+            return Err(ContractError::InvalidInput);
+        }
     /// 
     /// # Arguments
     /// * `env` - The contract environment.
@@ -52,7 +62,7 @@ impl IpRegistry {
         env.storage().persistent().extend_ttl(&idx_key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
 
         env.storage().instance().extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
-        id
+        Ok(id)
     }
 
     /// Retrieves a specific IP listing by its ID.
@@ -162,5 +172,37 @@ mod test {
 
         let listing = client.get_listing(&id);
         assert_eq!(listing.owner, owner);
+    }
+
+    #[test]
+    fn test_register_rejects_empty_ipfs_hash() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let result = client.try_register_ip(
+            &owner,
+            &Bytes::new(&env),
+            &Bytes::from_slice(&env, b"merkle_root_bytes"),
+        );
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
+    }
+
+    #[test]
+    fn test_register_rejects_empty_merkle_root() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let result = client.try_register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmTestHash"),
+            &Bytes::new(&env),
+        );
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
 }
