@@ -13,6 +13,7 @@ pub enum ContractError {
     EmptyDecryptionKey = 1,
     SwapNotFound = 2,
     InvalidAmount = 3,
+    ContractPaused = 4,
 }
 
 #[contracttype]
@@ -122,7 +123,9 @@ impl AtomicSwap {
             .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false);
-        assert!(!paused, "contract is paused");
+        if paused {
+            panic_with_error!(&env, ContractError::ContractPaused);
+        }
     }
 
     /// Buyer initiates swap by locking USDC into the contract.
@@ -542,7 +545,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "contract is paused")]
+    #[should_panic(expected = "Error(Contract, #4)")]
     fn test_initiate_swap_blocked_when_paused() {
         let env = Env::default();
         env.mock_all_auths();
@@ -573,7 +576,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "contract is paused")]
+    #[should_panic(expected = "Error(Contract, #4)")]
     fn test_confirm_swap_blocked_when_paused() {
         let env = Env::default();
         env.mock_all_auths();
