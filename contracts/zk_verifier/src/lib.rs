@@ -130,6 +130,20 @@ impl ZkVerifier {
         .publish(&env);
     }
 
+    /// Returns true if a Merkle root has been set for the given listing, false otherwise.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment.
+    /// * `listing_id` - The ID of the listing.
+    ///
+    /// # Returns
+    /// `true` if a root exists, `false` otherwise. Never panics.
+    pub fn proof_exists(env: Env, listing_id: u64) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::MerkleRoot(listing_id))
+    }
+
     /// Retrieves the stored Merkle root for a given listing.
     pub fn get_merkle_root(env: Env, listing_id: u64) -> Option<BytesN<32>> {
         env.storage()
@@ -192,6 +206,48 @@ mod test {
         let r = bytesn_to_u256(env, right);
         let h = poseidon2(env, l, r);
         u256_to_bytesn(env, &h)
+    }
+
+    #[test]
+    fn test_proof_exists_returns_false_when_no_root_set() {
+        let env = Env::default();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        assert!(!client.proof_exists(&99u64));
+    }
+
+    #[test]
+    fn test_proof_exists_returns_true_after_set_merkle_root() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let leaf = Bytes::from_slice(&env, b"proof_data");
+        let root: BytesN<32> = env.crypto().sha256(&leaf).into();
+
+        assert!(!client.proof_exists(&1u64));
+        client.set_merkle_root(&owner, &1u64, &root);
+        assert!(client.proof_exists(&1u64));
+    }
+
+    #[test]
+    fn test_proof_exists_is_isolated_per_listing() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let leaf = Bytes::from_slice(&env, b"data");
+        let root: BytesN<32> = env.crypto().sha256(&leaf).into();
+
+        client.set_merkle_root(&owner, &1u64, &root);
+
+        assert!(client.proof_exists(&1u64));
+        assert!(!client.proof_exists(&2u64));
     }
 
     #[test]
