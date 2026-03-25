@@ -1,8 +1,8 @@
 #![no_std]
 use ip_registry::IpRegistryClient;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Bytes,
-    Env,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
+    Address, Bytes, Env,
 };
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -340,6 +340,8 @@ pub fn unpause(env: Env) {
         );
         swap.status = SwapStatus::Cancelled;
         env.storage().persistent().set(&key, &swap);
+        env.events()
+            .publish((symbol_short!("cancelled"), swap_id), swap.buyer.clone());
         env.storage()
             .persistent()
             .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
@@ -415,7 +417,7 @@ mod test {
     use super::*;
     use ip_registry::{IpRegistry, IpRegistryClient};
     use soroban_sdk::{
-        testutils::{Address as _, Ledger},
+        testutils::{Address as _, Events, Ledger},
         token, Bytes, Env,
     };
 
