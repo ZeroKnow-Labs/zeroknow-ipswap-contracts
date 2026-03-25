@@ -13,6 +13,12 @@ pub enum ContractError {
     EmptyDecryptionKey = 1,
     SwapNotFound = 2,
     InvalidAmount = 3,
+    ContractPaused = 4,
+    NotInitialized = 5,
+    SwapNotPending = 6,
+    SwapAlreadyPending = 7,
+    SellerMismatch = 8,
+    SwapNotCancellable = 9,
 }
 
 #[contracttype]
@@ -71,10 +77,9 @@ impl AtomicSwap {
         fee_recipient: Address,
         cancel_delay_secs: u64,
     ) {
-        assert!(
-            !env.storage().instance().has(&DataKey::Config),
-            "already initialized"
-        );
+        if env.storage().instance().has(&DataKey::Config) {
+            env.panic_with_error(ContractError::NotInitialized);
+        }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(
             &DataKey::Config,
@@ -90,12 +95,9 @@ impl AtomicSwap {
     }
 
     /// Pause the contract — blocks initiate_swap and confirm_swap. Admin only.
-    pub fn pause(env: Env) {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("not initialized");
+pub fn pause(env: Env) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &true);
         env.storage()
@@ -104,12 +106,9 @@ impl AtomicSwap {
     }
 
     /// Unpause the contract. Admin only.
-    pub fn unpause(env: Env) {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("not initialized");
+pub fn unpause(env: Env) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage()
@@ -123,7 +122,9 @@ impl AtomicSwap {
             .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false);
-        assert!(!paused, "contract is paused");
+        if paused {
+            panic_with_error!(&env, ContractError::ContractPaused);
+        }
     }
 
     /// Buyer initiates swap by locking USDC into the contract.
@@ -141,12 +142,11 @@ impl AtomicSwap {
     ) -> u64 {
         Self::assert_not_paused(&env);
         buyer.require_auth();
-        assert!(usdc_amount > 0, "{:?}", ContractError::InvalidAmount);
-        let config: Config = env
-            .storage()
-            .instance()
-            .get(&DataKey::Config)
-            .expect("not initialized");
+        if usdc_amount <= 0 {
+            env.panic_with_error(ContractError::InvalidAmount);
+        }
+        let config: Config = env.storage().instance().get(&DataKey::Config)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
         let now = env.ledger().timestamp();
         let expires_at = now.saturating_add(config.cancel_delay_secs);
 
@@ -161,17 +161,18 @@ impl AtomicSwap {
                 .persistent()
                 .get(&DataKey::Swap(existing_swap_id))
                 .unwrap();
-            assert!(
-                existing_swap.status != SwapStatus::Pending || existing_swap.buyer == buyer,
-                "swap already pending for this listing"
-            );
+            if existing_swap.status == SwapStatus::Pending && existing_swap.buyer != buyer {
+                env.panic_with_error(ContractError::SwapAlreadyPending);
+            }
         }
 
         // Verify seller owns the listing in ip_registry
         let listing = IpRegistryClient::new(&env, &ip_registry)
             .get_listing(&listing_id)
-            .expect("listing not found");
-        assert!(listing.owner == seller, "seller does not own this listing");
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+        if listing.owner != seller {
+            env.panic_with_error(ContractError::SellerMismatch);
+        }
 
         token::Client::new(&env, &usdc_token).transfer(
             &buyer,
@@ -261,18 +262,18 @@ impl AtomicSwap {
     /// If a Config is present, a basis-point fee is deducted and sent to fee_recipient.
     pub fn confirm_swap(env: Env, swap_id: u64, decryption_key: Bytes) {
         Self::assert_not_paused(&env);
-        assert!(
-            !decryption_key.is_empty(),
-            "{:?}",
-            ContractError::EmptyDecryptionKey
-        );
+        if decryption_key.is_empty() {
+            env.panic_with_error(ContractError::EmptyDecryptionKey);
+        }
         let key = DataKey::Swap(swap_id);
         let mut swap: Swap = env
             .storage()
             .persistent()
             .get(&key)
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::SwapNotFound));
-        assert!(swap.status == SwapStatus::Pending, "swap not pending");
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+        if swap.status != SwapStatus::Pending {
+            env.panic_with_error(ContractError::SwapNotPending);
+        }
         swap.seller.require_auth();
 
         let usdc = token::Client::new(&env, &swap.usdc_token);
@@ -324,12 +325,13 @@ impl AtomicSwap {
             .storage()
             .persistent()
             .get(&key)
-            .expect("swap not found");
-        assert!(swap.status == SwapStatus::Pending, "swap not pending");
-        assert!(
-            env.ledger().timestamp() >= swap.expires_at,
-            "swap not yet cancellable"
-        );
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+        if swap.status != SwapStatus::Pending {
+            env.panic_with_error(ContractError::SwapNotPending);
+        }
+        if env.ledger().timestamp() < swap.expires_at {
+            env.panic_with_error(ContractError::SwapNotCancellable);
+        }
         swap.buyer.require_auth();
         token::Client::new(&env, &swap.usdc_token).transfer(
             &env.current_contract_address(),
@@ -456,7 +458,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "EmptyDecryptionKey")]
+    #[should_panic(expected = "Error(Contract, #1)")]
     fn test_confirm_swap_rejects_empty_key() {
         let env = Env::default();
         let contract_id = env.register(AtomicSwap, ());
@@ -574,7 +576,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "contract is paused")]
+    #[should_panic(expected = "Error(Contract, #4)")]
     fn test_initiate_swap_blocked_when_paused() {
         let env = Env::default();
         env.mock_all_auths();
@@ -605,7 +607,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "contract is paused")]
+    #[should_panic(expected = "Error(Contract, #4)")]
     fn test_confirm_swap_blocked_when_paused() {
         let env = Env::default();
         env.mock_all_auths();
@@ -669,7 +671,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "swap already pending for this listing")]
+    #[should_panic(expected = "Error(Contract, #7)")]
     fn test_duplicate_swap_rejected() {
         let env = Env::default();
         env.mock_all_auths();
@@ -729,7 +731,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "seller does not own this listing")]
+    #[should_panic(expected = "Error(Contract, #8)")]
     fn test_seller_impersonation_rejected() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1004,7 +1006,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "InvalidAmount")]
+    #[should_panic(expected = "Error(Contract, #3)")]
     fn test_initiate_swap_rejects_zero_amount() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1049,7 +1051,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "swap not yet cancellable")]
+    #[should_panic(expected = "Error(Contract, #9)")]
     fn test_cancel_swap_rejects_before_expiry() {
         let env = Env::default();
         env.mock_all_auths();
