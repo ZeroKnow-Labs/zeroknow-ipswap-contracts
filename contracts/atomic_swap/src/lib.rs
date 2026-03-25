@@ -1,8 +1,8 @@
 #![no_std]
 use ip_registry::IpRegistryClient;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Bytes,
-    Env,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
+    Address, Bytes, Env,
 };
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -322,6 +322,8 @@ impl AtomicSwap {
         );
         swap.status = SwapStatus::Cancelled;
         env.storage().persistent().set(&key, &swap);
+        env.events()
+            .publish((symbol_short!("cancelled"), swap_id), swap.buyer.clone());
         env.storage()
             .persistent()
             .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
@@ -381,7 +383,7 @@ mod test {
     use super::*;
     use ip_registry::{IpRegistry, IpRegistryClient};
     use soroban_sdk::{
-        testutils::{Address as _, Ledger},
+        testutils::{Address as _, Events, Ledger},
         token, Bytes, Env,
     };
 
@@ -1134,5 +1136,49 @@ mod test {
         // Clear mocked auths so no address is authorized — require_auth() on buyer must fail
         env.set_auths(&[]);
         client.cancel_swap(&swap_id);
+    }
+
+    #[test]
+    fn test_cancel_swap_emits_cancelled_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let (registry_id, listing_id) = setup_registry(&env, &seller);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &120u64,
+        );
+
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+
+        env.ledger()
+            .with_mut(|li| li.timestamp = li.timestamp.saturating_add(121));
+        client.cancel_swap(&swap_id);
+
+        let events = env.events().all();
+        let (_, topics, data) = events.last().unwrap();
+        assert_eq!(
+            topics,
+            (symbol_short!("cancelled"), swap_id).into_val(&env)
+        );
+        assert_eq!(data, buyer.into_val(&env));
     }
 }
