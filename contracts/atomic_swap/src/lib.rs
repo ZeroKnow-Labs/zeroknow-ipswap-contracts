@@ -380,7 +380,10 @@ impl AtomicSwap {
 mod test {
     use super::*;
     use ip_registry::{IpRegistry, IpRegistryClient};
-    use soroban_sdk::{testutils::{Address as _, Ledger}, token, Bytes, Env};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger},
+        token, Bytes, Env,
+    };
 
     fn setup_registry(env: &Env, seller: &Address) -> (Address, u64) {
         let registry_id = env.register(IpRegistry, ());
@@ -663,7 +666,12 @@ mod test {
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
-        client.initialize(&Address::generate(&env), &0u32, &Address::generate(&env), &60u64);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+        );
 
         // buyer1 initiates
         client.initiate_swap(
@@ -704,7 +712,12 @@ mod test {
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
-        client.initialize(&Address::generate(&env), &0u32, &Address::generate(&env), &60u64);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+        );
 
         client.initiate_swap(
             &listing_id,
