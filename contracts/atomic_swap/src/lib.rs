@@ -19,6 +19,8 @@ pub enum ContractError {
     SwapAlreadyPending = 7,
     SellerMismatch = 8,
     SwapNotCancellable = 9,
+    AlreadyInitialized = 10,
+    CounterOverflow = 11,
 }
 
 #[contracttype]
@@ -116,7 +118,7 @@ impl AtomicSwap {
         cancel_delay_secs: u64,
     ) {
         if env.storage().instance().has(&DataKey::Config) {
-            env.panic_with_error(ContractError::NotInitialized);
+            env.panic_with_error(ContractError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(
@@ -217,11 +219,16 @@ pub fn unpause(env: Env) {
             &env.current_contract_address(),
             &usdc_amount,
         );
-        let prev: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+        let prev: u64 = env.storage().persistent().get(&DataKey::Counter).unwrap_or(0);
         let id: u64 = prev
             .checked_add(1)
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
-        env.storage().instance().set(&DataKey::Counter, &id);
+        env.storage().persistent().set(&DataKey::Counter, &id);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Counter,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
         let key = DataKey::Swap(id);
         env.storage().persistent().set(
             &key,
@@ -383,10 +390,10 @@ pub fn unpause(env: Env) {
         if swap.status != SwapStatus::Pending {
             env.panic_with_error(ContractError::SwapNotPending);
         }
+        swap.buyer.require_auth();
         if env.ledger().timestamp() < swap.expires_at {
             env.panic_with_error(ContractError::SwapNotCancellable);
         }
-        swap.buyer.require_auth();
         token::Client::new(&env, &swap.usdc_token).transfer(
             &env.current_contract_address(),
             &swap.buyer,
@@ -509,6 +516,27 @@ mod test {
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
         assert_eq!(client.get_swap_status(&999), None);
+    }
+
+    #[test]
+    fn test_initialize_twice_returns_already_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        client.initialize(&Address::generate(&env), &0u32, &Address::generate(&env), &60u64);
+
+        let result = client.try_initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+        );
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::AlreadyInitialized))
+        );
     }
 
     #[test]
@@ -1192,6 +1220,55 @@ mod test {
         assert_eq!(usdc_client.balance(&buyer), 500);
 
         client.cancel_swap(&swap_id);
+    }
+
+    #[test]
+    fn test_non_buyer_cancel_fails_auth() {
+        let env = Env::default();
+        // Do NOT mock all auths — we want auth to fail for the non-buyer
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let (registry_id, listing_id) = setup_registry(&env, &seller);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        // Use mock_all_auths just for setup calls
+        env.mock_all_auths();
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+        );
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+
+        // Advance past expiry
+        env.ledger().with_mut(|li| li.timestamp = li.timestamp.saturating_add(61));
+
+        // Attacker tries to cancel — should fail auth since buyer.require_auth() is checked first
+        let result = client.try_cancel_swap(&swap_id);
+        // Auth failure surfaces as an error (not a ContractError variant)
+        assert!(result.is_err(), "non-buyer cancel should fail");
+        // Buyer's USDC should still be locked
+        assert_eq!(
+            token::Client::new(&env, &usdc_id).balance(&buyer),
+            500
+        );
     }
 
     #[test]

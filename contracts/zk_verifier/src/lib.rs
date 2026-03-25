@@ -1,9 +1,15 @@
 #![no_std]
 use soroban_poseidon::poseidon_hash;
 use soroban_sdk::{
-    contract, contractevent, contractimpl, contracttype, crypto::BnScalar, Address, Bytes, BytesN,
-    Env, U256, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, crypto::BnScalar, Address,
+    Bytes, BytesN, Env, U256, Vec,
 };
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ContractError {
+    Unauthorized = 1,
+}
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
 
@@ -101,10 +107,9 @@ impl ZkVerifier {
             .persistent()
             .get::<DataKey, Address>(&owner_key)
         {
-            assert!(
-                existing_owner == owner,
-                "unauthorized: caller is not the listing owner"
-            );
+            if existing_owner != owner {
+                soroban_sdk::panic_with_error!(&env, ContractError::Unauthorized);
+            }
         } else {
             env.storage().persistent().set(&owner_key, &owner);
             env.storage().persistent().extend_ttl(
@@ -160,11 +165,14 @@ impl ZkVerifier {
         leaf: Bytes,
         path: Vec<ProofNode>,
     ) -> bool {
-        let root: BytesN<32> = env
+        let root: BytesN<32> = match env
             .storage()
             .persistent()
             .get(&DataKey::MerkleRoot(listing_id))
-            .expect("root not found");
+        {
+            Some(r) => r,
+            None => return false,
+        };
 
         let leaf_fe = bytes_to_field(&env, &leaf);
         let mut current: U256 = poseidon1(&env, leaf_fe);
@@ -345,7 +353,6 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "unauthorized: caller is not the listing owner")]
     fn test_unauthorized_overwrite_rejected() {
         let env = Env::default();
         env.mock_all_auths();
@@ -361,7 +368,22 @@ mod test {
 
         let fake_leaf = Bytes::from_slice(&env, b"fake");
         let fake_root = poseidon_leaf(&env, &fake_leaf);
-        client.set_merkle_root(&attacker, &1u64, &fake_root);
+        let result = client.try_set_merkle_root(&attacker, &1u64, &fake_root);
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_verify_partial_proof_returns_false_when_root_missing() {
+        let env = Env::default();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let leaf = Bytes::from_slice(&env, b"any_leaf");
+        let path: Vec<ProofNode> = Vec::new(&env);
+
+        // No root set for listing 99 — should return false, not panic
+        let result = client.verify_partial_proof(&99u64, &leaf, &path);
+        assert!(!result);
     }
 
     #[test]

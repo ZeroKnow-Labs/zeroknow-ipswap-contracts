@@ -50,11 +50,16 @@ impl IpRegistry {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
         owner.require_auth();
-        let prev: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+        let prev: u64 = env.storage().persistent().get(&DataKey::Counter).unwrap_or(0);
         let id: u64 = prev
             .checked_add(1)
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
-        env.storage().instance().set(&DataKey::Counter, &id);
+        env.storage().persistent().set(&DataKey::Counter, &id);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Counter,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
 
         let key = DataKey::Listing(id);
         env.storage().persistent().set(
@@ -265,7 +270,7 @@ mod test {
 
         env.as_contract(&contract_id, || {
             env.storage()
-                .instance()
+                .persistent()
                 .set(&DataKey::Counter, &u64::MAX);
         });
 
