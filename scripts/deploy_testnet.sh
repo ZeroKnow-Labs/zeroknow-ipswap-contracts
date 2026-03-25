@@ -1,24 +1,75 @@
 #!/usr/bin/env bash
-set -e
-source .env
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT_DIR"
+
+if [[ -f .env ]]; then
+  source .env
+elif [[ -f .env.example ]]; then
+  cp .env.example .env
+  source .env
+else
+  echo "Missing .env and .env.example" >&2
+  exit 1
+fi
+
+: "${STELLAR_NETWORK:=testnet}"
+: "${ATOMIC_SWAP_ADMIN:?ATOMIC_SWAP_ADMIN must be set in .env}"
+: "${ATOMIC_SWAP_FEE_BPS:=0}"
+: "${ATOMIC_SWAP_FEE_RECIPIENT:?ATOMIC_SWAP_FEE_RECIPIENT must be set in .env}"
+: "${ATOMIC_SWAP_CANCEL_DELAY_SECS:=3600}"
 
 echo "Deploying to testnet..."
 
-IP_REGISTRY=$(stellar contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/ip_registry.wasm \
-  --network testnet \
-  --source deployer)
+deploy_contract() {
+  local wasm_path="$1"
+  local deployed_id
+  if ! deployed_id=$(stellar contract deploy \
+    --wasm "$wasm_path" \
+    --network "$STELLAR_NETWORK" \
+    --source deployer); then
+    echo "Failed to deploy contract wasm: $wasm_path" >&2
+    exit 1
+  fi
+  printf '%s' "$deployed_id"
+}
 
-ATOMIC_SWAP=$(stellar contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/atomic_swap.wasm \
-  --network testnet \
-  --source deployer)
+IP_REGISTRY=$(deploy_contract target/wasm32-unknown-unknown/release/ip_registry.wasm)
+ATOMIC_SWAP=$(deploy_contract target/wasm32-unknown-unknown/release/atomic_swap.wasm)
+ZK_VERIFIER=$(deploy_contract target/wasm32-unknown-unknown/release/zk_verifier.wasm)
 
-ZK_VERIFIER=$(stellar contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/zk_verifier.wasm \
-  --network testnet \
-  --source deployer)
+echo "Initializing atomic swap contract..."
+if ! stellar contract invoke \
+  --id "$ATOMIC_SWAP" \
+  --network "$STELLAR_NETWORK" \
+  --source deployer \
+  -- \
+  initialize \
+  --admin "$ATOMIC_SWAP_ADMIN" \
+  --fee_bps "$ATOMIC_SWAP_FEE_BPS" \
+  --fee_recipient "$ATOMIC_SWAP_FEE_RECIPIENT" \
+  --cancel_delay_secs "$ATOMIC_SWAP_CANCEL_DELAY_SECS"; then
+  echo "Failed to initialize atomic swap contract: $ATOMIC_SWAP" >&2
+  exit 1
+fi
 
+set_env_var() {
+  local key="$1"
+  local value="$2"
+  if grep -q "^${key}=" .env; then
+    sed -i.bak "s|^${key}=.*|${key}=${value}|" .env
+  else
+    printf '\n%s=%s\n' "$key" "$value" >> .env
+  fi
+}
+
+set_env_var CONTRACT_IP_REGISTRY "$IP_REGISTRY"
+set_env_var CONTRACT_ATOMIC_SWAP "$ATOMIC_SWAP"
+set_env_var CONTRACT_ZK_VERIFIER "$ZK_VERIFIER"
+rm -f .env.bak
+
+echo "Deployment complete. Updated .env with deployed contract IDs."
 echo "CONTRACT_IP_REGISTRY=$IP_REGISTRY"
 echo "CONTRACT_ATOMIC_SWAP=$ATOMIC_SWAP"
 echo "CONTRACT_ZK_VERIFIER=$ZK_VERIFIER"

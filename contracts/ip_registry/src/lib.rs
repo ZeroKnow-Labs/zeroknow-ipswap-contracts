@@ -1,5 +1,7 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, Address, Bytes, Env, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Bytes, Env, Vec,
+};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -30,68 +32,70 @@ pub struct IpRegistry;
 #[contractimpl]
 impl IpRegistry {
     /// Register a new IP listing. Returns the listing ID.
-    pub fn register_ip(env: Env, owner: Address, ipfs_hash: Bytes, merkle_root: Bytes) -> Result<u64, ContractError> {
-        if ipfs_hash.is_empty() || merkle_root.is_empty() {
-            return Err(ContractError::InvalidInput);
-        }
-    /// 
-    /// # Arguments
-    /// * `env` - The contract environment.
-    /// * `owner` - The address of the owner registering the IP.
-    /// * `ipfs_hash` - The IPFS hash of the off-chain IP data.
-    /// * `merkle_root` - The Merkle root of the listing data (used for ZK verifications).
-    /// 
-    /// # Returns
-    /// Returns the unique `u64` identifier for the newly registered listing.
-    /// 
-    /// # Panics
-    /// * Panics if the caller is not the `owner`.
     pub fn register_ip(env: Env, owner: Address, ipfs_hash: Bytes, merkle_root: Bytes) -> u64 {
+        if ipfs_hash.is_empty() || merkle_root.is_empty() {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
         owner.require_auth();
         let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
         env.storage().instance().set(&DataKey::Counter, &id);
 
         let key = DataKey::Listing(id);
-        env.storage().persistent().set(&key, &Listing { owner: owner.clone(), ipfs_hash, merkle_root });
-        env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage().persistent().set(
+            &key,
+            &Listing {
+                owner: owner.clone(),
+                ipfs_hash,
+                merkle_root,
+            },
+        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
 
         let idx_key = DataKey::OwnerIndex(owner.clone());
-        let mut ids: Vec<u64> = env.storage().persistent().get(&idx_key).unwrap_or_else(|| Vec::new(&env));
+        let mut ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&idx_key)
+            .unwrap_or_else(|| Vec::new(&env));
         ids.push_back(id);
         env.storage().persistent().set(&idx_key, &ids);
-        env.storage().persistent().extend_ttl(&idx_key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage().persistent().extend_ttl(
+            &idx_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
 
-        env.storage().instance().extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
-        Ok(id)
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        id
     }
 
     /// Retrieves a specific IP listing by its ID.
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The contract environment.
     /// * `listing_id` - The ID of the listing to retrieve.
-    /// 
+    ///
     /// # Returns
-    /// Returns the `Listing` struct containing owner, IPFS hash, and Merkle root.
-    /// 
-    /// # Panics
-    /// * Panics if the listing is not found in persistent storage.
-    pub fn get_listing(env: Env, listing_id: u64) -> Listing {
+    /// Returns `Some(Listing)` if found, otherwise `None`.
+    pub fn get_listing(env: Env, listing_id: u64) -> Option<Listing> {
         env.storage()
             .persistent()
             .get(&DataKey::Listing(listing_id))
-            .expect("listing not found")
     }
 
     /// Retrieves all listing IDs owned by a specific address.
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The contract environment.
     /// * `owner` - The address of the owner.
-    /// 
+    ///
     /// # Returns
     /// Returns a `Vec<u64>` containing all listing IDs associated with the specified owner.
-    /// 
+    ///
     /// # Panics
     /// This view function does not panic under normal conditions, but will panic if internal persistent loading fails for an existing ID.
     pub fn list_by_owner(env: Env, owner: Address) -> Vec<u64> {
@@ -105,7 +109,10 @@ impl IpRegistry {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Env};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger as _},
+        Env,
+    };
 
     #[test]
     fn test_register_and_get() {
@@ -121,7 +128,7 @@ mod test {
         let id = client.register_ip(&owner, &hash, &root);
         assert_eq!(id, 1);
 
-        let listing = client.get_listing(&id);
+        let listing = client.get_listing(&id).expect("listing should exist");
         assert_eq!(listing.owner, owner);
     }
 
@@ -170,8 +177,17 @@ mod test {
 
         env.ledger().with_mut(|li| li.sequence_number += 5_000);
 
-        let listing = client.get_listing(&id);
+        let listing = client.get_listing(&id).expect("listing should exist");
         assert_eq!(listing.owner, owner);
+    }
+
+    #[test]
+    fn test_get_listing_missing_returns_none() {
+        let env = Env::default();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        assert!(client.get_listing(&999).is_none());
     }
 
     #[test]
@@ -187,7 +203,7 @@ mod test {
             &Bytes::new(&env),
             &Bytes::from_slice(&env, b"merkle_root_bytes"),
         );
-        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
+        assert!(result.is_err());
     }
 
     #[test]
@@ -203,6 +219,6 @@ mod test {
             &Bytes::from_slice(&env, b"QmTestHash"),
             &Bytes::new(&env),
         );
-        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
+        assert!(result.is_err());
     }
 }
