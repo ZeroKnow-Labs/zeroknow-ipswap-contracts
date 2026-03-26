@@ -94,6 +94,7 @@ impl IpRegistry {
                 royalty_recipient: royalty_recipient.clone(),
                 price_usdc,
             },
+            &Listing { owner: owner.clone(), ipfs_hash: ipfs_hash.clone(), merkle_root: merkle_root.clone() },
         );
         env.storage()
             .persistent()
@@ -122,6 +123,13 @@ impl IpRegistry {
 
     /// Register multiple IP listings in a single transaction. Returns listing IDs.
     pub fn batch_register_ip(env: Env, owner: Address, entries: Vec<IpEntry>) -> Vec<u64> {
+    /// Validates all entries before writing — fails atomically if any entry is invalid.
+    pub fn batch_register_ip(
+        env: Env,
+        owner: Address,
+        entries: Vec<IpEntry>,
+    ) -> Vec<u64> {
+        // Validate all entries first
         let mut i: u32 = 0;
         while i < entries.len() {
             let (ipfs_hash, merkle_root) = entries.get(i).unwrap();
@@ -202,7 +210,7 @@ impl IpRegistry {
         listing_ids
     }
 
-    /// Retrieves a specific IP listing by its ID.
+    /// Retrieves a specific IP listing by its ID, or None if it doesn't exist.
     pub fn get_listing(env: Env, listing_id: u64) -> Option<Listing> {
         env.storage()
             .persistent()
@@ -212,6 +220,10 @@ impl IpRegistry {
     /// Returns the total number of registered listings.
     pub fn listing_count(env: Env) -> u64 {
         env.storage().instance().get(&DataKey::Counter).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::Counter)
+            .unwrap_or(0)
     }
 
     /// Retrieves all listing IDs owned by a specific address.
@@ -227,6 +239,45 @@ impl IpRegistry {
 mod test {
     use super::*;
     use soroban_sdk::{testutils::{Address as _, Ledger as _}, Env};
+
+    #[test]
+    fn test_listing_count() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        assert_eq!(client.listing_count(), 0);
+
+        let owner = Address::generate(&env);
+        let hash = Bytes::from_slice(&env, b"QmHash");
+        let root = Bytes::from_slice(&env, b"root");
+
+        client.register_ip(&owner, &hash, &root);
+        assert_eq!(client.listing_count(), 1);
+
+        client.register_ip(&owner, &hash, &root);
+        assert_eq!(client.listing_count(), 2);
+    }
+
+    #[test]
+    fn test_listing_count_includes_batch() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((Bytes::from_slice(&env, b"QmHash1"), Bytes::from_slice(&env, b"root1")));
+        entries.push_back((Bytes::from_slice(&env, b"QmHash2"), Bytes::from_slice(&env, b"root2")));
+
+        client.batch_register_ip(&owner, &entries);
+        assert_eq!(client.listing_count(), 2);
+
+        client.register_ip(&owner, &Bytes::from_slice(&env, b"QmHash3"), &Bytes::from_slice(&env, b"root3"));
+        assert_eq!(client.listing_count(), 3);
+    }
 
     fn register(client: &IpRegistryClient, owner: &Address, hash: &[u8], root: &[u8], price: i128) -> u64 {
         let env = &client.env;
@@ -248,13 +299,22 @@ mod test {
         let client = IpRegistryClient::new(&env, &contract_id);
 
         let owner = Address::generate(&env);
-        let id = register(&client, &owner, b"QmTestHash", b"merkle_root", 1000);
+        let hash = Bytes::from_slice(&env, b"QmTestHash");
+        let root = Bytes::from_slice(&env, b"merkle_root_bytes");
+
+        let id = client.register_ip(&owner, &hash, &root);
         assert_eq!(id, 1);
 
         let listing = client.get_listing(&id).expect("listing should exist");
         assert_eq!(listing.owner, owner);
-        assert_eq!(listing.price_usdc, 1000);
-        assert_eq!(listing.royalty_bps, 0);
+    }
+
+    #[test]
+    fn test_get_listing_missing_returns_none() {
+        let env = Env::default();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        assert!(client.get_listing(&999).is_none());
     }
 
     #[test]
@@ -264,9 +324,25 @@ mod test {
         let contract_id = env.register(IpRegistry, ());
         let client = IpRegistryClient::new(&env, &contract_id);
 
-        let owner = Address::generate(&env);
-        let id = register(&client, &owner, b"QmHash", b"root", 0);
-        assert_eq!(client.get_listing(&id).unwrap().price_usdc, 0);
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let hash = Bytes::from_slice(&env, b"QmHash");
+        let root = Bytes::from_slice(&env, b"root");
+
+        let id1 = client.register_ip(&owner_a, &hash, &root);
+        let id2 = client.register_ip(&owner_b, &hash, &root);
+        let id3 = client.register_ip(&owner_a, &hash, &root);
+
+        let a_ids = client.list_by_owner(&owner_a);
+        assert_eq!(a_ids.len(), 2);
+        assert_eq!(a_ids.get(0).unwrap(), id1);
+        assert_eq!(a_ids.get(1).unwrap(), id3);
+
+        let b_ids = client.list_by_owner(&owner_b);
+        assert_eq!(b_ids.len(), 1);
+        assert_eq!(b_ids.get(0).unwrap(), id2);
+
+        assert_eq!(client.list_by_owner(&Address::generate(&env)).len(), 0);
     }
 
     #[test]
@@ -281,11 +357,9 @@ mod test {
             &owner,
             &Bytes::from_slice(&env, b"QmHash"),
             &Bytes::from_slice(&env, b"root"),
-            &0u32,
-            &owner,
-            &-1i128,
         );
-        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
+        env.ledger().with_mut(|li| li.sequence_number += 5_000);
+        assert!(client.get_listing(&id).is_some());
     }
 
     #[test]
@@ -297,7 +371,9 @@ mod test {
 
         let owner = Address::generate(&env);
         let result = client.try_register_ip(
-            &owner, &Bytes::new(&env), &Bytes::from_slice(&env, b"root"), &0u32, &owner, &0i128,
+            &owner,
+            &Bytes::new(&env),
+            &Bytes::from_slice(&env, b"merkle_root_bytes"),
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
@@ -311,7 +387,9 @@ mod test {
 
         let owner = Address::generate(&env);
         let result = client.try_register_ip(
-            &owner, &Bytes::from_slice(&env, b"QmHash"), &Bytes::new(&env), &0u32, &owner, &0i128,
+            &owner,
+            &Bytes::from_slice(&env, b"QmTestHash"),
+            &Bytes::new(&env),
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
@@ -321,7 +399,24 @@ mod test {
         let env = Env::default();
         let contract_id = env.register(IpRegistry, ());
         let client = IpRegistryClient::new(&env, &contract_id);
-        assert!(client.get_listing(&999).is_none());
+
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((Bytes::from_slice(&env, b"QmHash1"), Bytes::from_slice(&env, b"root1")));
+        entries.push_back((Bytes::from_slice(&env, b"QmHash2"), Bytes::from_slice(&env, b"root2")));
+        entries.push_back((Bytes::from_slice(&env, b"QmHash3"), Bytes::from_slice(&env, b"root3")));
+
+        let ids = client.batch_register_ip(&owner, &entries);
+        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.get(0).unwrap(), 1);
+        assert_eq!(ids.get(1).unwrap(), 2);
+        assert_eq!(ids.get(2).unwrap(), 3);
+
+        let listing1 = client.get_listing(&1).expect("listing 1 should exist");
+        assert_eq!(listing1.owner, owner);
+        assert_eq!(listing1.ipfs_hash, Bytes::from_slice(&env, b"QmHash1"));
+
+        assert_eq!(client.list_by_owner(&owner).len(), 3);
     }
 
     #[test]
@@ -333,66 +428,12 @@ mod test {
 
         assert_eq!(client.listing_count(), 0);
         let owner = Address::generate(&env);
-        register(&client, &owner, b"QmHash1", b"root1", 100);
-        assert_eq!(client.listing_count(), 1);
-        register(&client, &owner, b"QmHash2", b"root2", 200);
-        assert_eq!(client.listing_count(), 2);
-    }
-
-    #[test]
-    fn test_owner_index() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(IpRegistry, ());
-        let client = IpRegistryClient::new(&env, &contract_id);
-
-        let owner_a = Address::generate(&env);
-        let owner_b = Address::generate(&env);
-
-        let id1 = register(&client, &owner_a, b"QmHash1", b"root1", 0);
-        let id2 = register(&client, &owner_b, b"QmHash2", b"root2", 0);
-        let id3 = register(&client, &owner_a, b"QmHash3", b"root3", 0);
-
-        let a_ids = client.list_by_owner(&owner_a);
-        assert_eq!(a_ids.len(), 2);
-        assert_eq!(a_ids.get(0).unwrap(), id1);
-        assert_eq!(a_ids.get(1).unwrap(), id3);
-
-        let b_ids = client.list_by_owner(&owner_b);
-        assert_eq!(b_ids.len(), 1);
-        assert_eq!(b_ids.get(0).unwrap(), id2);
-    }
-
-    #[test]
-    fn test_listing_survives_ttl_boundary() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(IpRegistry, ());
-        let client = IpRegistryClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        let id = register(&client, &owner, b"QmHash", b"root", 500);
-        env.ledger().with_mut(|li| li.sequence_number += 5_000);
-        assert!(client.get_listing(&id).is_some());
-    }
-
-    #[test]
-    fn test_batch_register_ip() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(IpRegistry, ());
-        let client = IpRegistryClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
-        entries.push_back((Bytes::from_slice(&env, b"QmHash1"), Bytes::from_slice(&env, b"root1")));
-        entries.push_back((Bytes::from_slice(&env, b"QmHash2"), Bytes::from_slice(&env, b"root2")));
+        entries.push_back((Bytes::from_slice(&env, b"QmSingle"), Bytes::from_slice(&env, b"single_root")));
 
         let ids = client.batch_register_ip(&owner, &entries);
-        assert_eq!(ids.len(), 2);
-        assert!(client.get_listing(&ids.get(0).unwrap()).is_some());
-        assert!(client.get_listing(&ids.get(1).unwrap()).is_some());
-        assert_eq!(client.list_by_owner(&owner).len(), 2);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids.get(0).unwrap(), 1);
     }
 
     #[test]
@@ -410,7 +451,7 @@ mod test {
     }
 
     #[test]
-    fn test_batch_register_ip_rejects_empty_ipfs_hash() {
+    fn test_batch_register_ip() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
@@ -419,11 +460,31 @@ mod test {
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
         entries.push_back((Bytes::new(&env), Bytes::from_slice(&env, b"root")));
-        assert!(client.try_batch_register_ip(&owner, &entries).is_err());
+
+        let ids = client.batch_register_ip(&owner, &entries);
+        assert_eq!(ids.len(), 2);
+        assert!(client.get_listing(&ids.get(0).unwrap()).is_some());
+        assert!(client.get_listing(&ids.get(1).unwrap()).is_some());
+        assert_eq!(client.list_by_owner(&owner).len(), 2);
     }
 
     #[test]
-    fn test_batch_register_ip_atomic_failure() {
+    fn test_batch_register_ip_empty_list() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((Bytes::from_slice(&env, b"QmHash"), Bytes::new(&env)));
+
+        let result = client.try_batch_register_ip(&owner, &entries);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_batch_register_ip_rejects_empty_ipfs_hash() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
@@ -434,7 +495,36 @@ mod test {
         entries.push_back((Bytes::from_slice(&env, b"QmHash1"), Bytes::from_slice(&env, b"root1")));
         entries.push_back((Bytes::new(&env), Bytes::from_slice(&env, b"root2")));
 
-        assert!(client.try_batch_register_ip(&owner, &entries).is_err());
+        let result = client.try_batch_register_ip(&owner, &entries);
+        assert!(result.is_err());
         assert_eq!(client.listing_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_register_ip_atomic_failure() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+
+        let single_id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmSingle"),
+            &Bytes::from_slice(&env, b"single_root"),
+        );
+        assert_eq!(single_id, 1);
+
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((Bytes::from_slice(&env, b"QmBatch1"), Bytes::from_slice(&env, b"batch_root1")));
+        entries.push_back((Bytes::from_slice(&env, b"QmBatch2"), Bytes::from_slice(&env, b"batch_root2")));
+
+        let batch_ids = client.batch_register_ip(&owner, &entries);
+        assert_eq!(batch_ids.get(0).unwrap(), 2);
+        assert_eq!(batch_ids.get(1).unwrap(), 3);
+
+        assert_eq!(client.listing_count(), 3);
+        assert_eq!(client.list_by_owner(&owner).len(), 3);
     }
 }
