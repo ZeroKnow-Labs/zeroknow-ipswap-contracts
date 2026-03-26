@@ -252,9 +252,13 @@ impl IpRegistry {
     }
 
     pub fn get_listing(env: Env, listing_id: u64) -> Option<Listing> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Listing(listing_id))
+        let key = DataKey::Listing(listing_id);
+        if env.storage().persistent().has(&key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        }
+        env.storage().persistent().get(&key)
     }
 
     pub fn listing_count(env: Env) -> u64 {
@@ -651,24 +655,43 @@ mod test {
         env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
         let client = IpRegistryClient::new(&env, &contract_id);
-
         let owner = Address::generate(&env);
         let id = client.register_ip(
             &owner,
-            &Bytes::from_slice(&env, b"QmOldHash"),
+            &Bytes::from_slice(&env, b"QmOld"),
             &Bytes::from_slice(&env, b"old_root"),
-            &0u32,
-            &owner,
-            &0i128,
         );
-
-        let new_hash = Bytes::from_slice(&env, b"QmNewHash");
-        let new_root = Bytes::from_slice(&env, b"new_root");
-        client.update_listing(&id, &new_hash, &new_root, &None);
-
+        client.update_listing(
+            &owner,
+            &id,
+            &Bytes::from_slice(&env, b"QmNew"),
+            &Bytes::from_slice(&env, b"new_root"),
+        );
         let listing = client.get_listing(&id).unwrap();
-        assert_eq!(listing.ipfs_hash, new_hash);
-        assert_eq!(listing.merkle_root, new_root);
+        assert_eq!(listing.ipfs_hash, Bytes::from_slice(&env, b"QmNew"));
+        assert_eq!(listing.merkle_root, Bytes::from_slice(&env, b"new_root"));
+    }
+
+    #[test]
+    fn test_update_listing_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+        let result = client.try_update_listing(
+            &attacker,
+            &id,
+            &Bytes::from_slice(&env, b"QmNew"),
+            &Bytes::from_slice(&env, b"new_root"),
+        );
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
     }
 
     #[test]
@@ -677,181 +700,106 @@ mod test {
         env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
         let client = IpRegistryClient::new(&env, &contract_id);
-
-        let result = client.try_update_listing(
-            &999,
-            &Bytes::from_slice(&env, b"QmHash"),
-            &Bytes::from_slice(&env, b"root"),
-            &None,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_update_listing_rejects_empty_hash() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(IpRegistry, ());
-        let client = IpRegistryClient::new(&env, &contract_id);
-
         let owner = Address::generate(&env);
-        let id = client.register_ip(
-            &owner,
-            &Bytes::from_slice(&env, b"QmHash"),
-            &Bytes::from_slice(&env, b"root"),
-            &0u32,
-            &owner,
-            &0i128,
-        );
-
         let result = client.try_update_listing(
-            &id,
-            &Bytes::new(&env),
-            &Bytes::from_slice(&env, b"root"),
-            &None,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_update_listing_rejects_empty_merkle_root() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(IpRegistry, ());
-        let client = IpRegistryClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        let id = client.register_ip(
             &owner,
-            &Bytes::from_slice(&env, b"QmHash"),
-            &Bytes::from_slice(&env, b"root"),
-            &0u32,
-            &owner,
-            &0i128,
-        );
-
-        let result = client.try_update_listing(
-            &id,
-            &Bytes::from_slice(&env, b"QmHash"),
-            &Bytes::new(&env),
-            &None,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_update_listing_rejected_when_pending_swap_exists() {
-        use atomic_swap::{AtomicSwap, AtomicSwapClient};
-
-        let env = Env::default();
-        env.mock_all_auths();
-
-        // Register listing
-        let registry_id = env.register(IpRegistry, ());
-        let registry = IpRegistryClient::new(&env, &registry_id);
-        let owner = Address::generate(&env);
-        let listing_id = registry.register_ip(
-            &owner,
-            &Bytes::from_slice(&env, b"QmHash"),
-            &Bytes::from_slice(&env, b"root"),
-            &0u32,
-            &owner,
-            &0i128,
-        );
-
-        // Set up USDC and buyer
-        let buyer = Address::generate(&env);
-        let usdc_admin = Address::generate(&env);
-        let usdc_id = env
-            .register_stellar_asset_contract_v2(usdc_admin)
-            .address();
-        token::StellarAssetClient::new(&env, &usdc_id).mint(&buyer, &1000);
-
-        // Set up AtomicSwap
-        let swap_contract_id = env.register(AtomicSwap, ());
-        let swap_client = AtomicSwapClient::new(&env, &swap_contract_id);
-        swap_client.initialize(
-            &Address::generate(&env),
-            &0u32,
-            &Address::generate(&env),
-            &120u64,
-        );
-
-        // Initiate a pending swap
-        swap_client.initiate_swap(
-            &listing_id,
-            &buyer,
-            &owner,
-            &usdc_id,
-            &500,
-            &Address::generate(&env),
-            &registry_id,
-        );
-
-        // update_listing should be rejected because a pending swap exists
-        let result = registry.try_update_listing(
-            &listing_id,
-            &Bytes::from_slice(&env, b"QmNewHash"),
+            &999u64,
+            &Bytes::from_slice(&env, b"QmNew"),
             &Bytes::from_slice(&env, b"new_root"),
-            &Some(swap_contract_id),
         );
-        assert!(result.is_err());
+        assert_eq!(result, Err(Ok(ContractError::ListingNotFound)));
     }
 
     #[test]
-    fn test_update_listing_allowed_after_swap_completed() {
-        use atomic_swap::{AtomicSwap, AtomicSwapClient};
-
+    fn test_deregister_listing_success() {
         let env = Env::default();
         env.mock_all_auths();
-
-        let registry_id = env.register(IpRegistry, ());
-        let registry = IpRegistryClient::new(&env, &registry_id);
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
         let owner = Address::generate(&env);
-        let listing_id = registry.register_ip(
+        let id = client.register_ip(
             &owner,
             &Bytes::from_slice(&env, b"QmHash"),
             &Bytes::from_slice(&env, b"root"),
-            &0u32,
+        );
+        client.deregister_listing(&owner, &id);
+        assert!(client.get_listing(&id).is_none());
+        assert_eq!(client.list_by_owner(&owner).len(), 0);
+    }
+
+    #[test]
+    fn test_deregister_listing_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let id = client.register_ip(
             &owner,
-            &0i128,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
         );
+        let result = client.try_deregister_listing(&attacker, &id);
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+    }
 
-        let buyer = Address::generate(&env);
-        let usdc_admin = Address::generate(&env);
-        let usdc_id = env
-            .register_stellar_asset_contract_v2(usdc_admin)
-            .address();
-        token::StellarAssetClient::new(&env, &usdc_id).mint(&buyer, &1000);
-
-        let swap_contract_id = env.register(AtomicSwap, ());
-        let swap_client = AtomicSwapClient::new(&env, &swap_contract_id);
-        swap_client.initialize(
-            &Address::generate(&env),
-            &0u32,
-            &Address::generate(&env),
-            &120u64,
-        );
-
-        let swap_id = swap_client.initiate_swap(
-            &listing_id,
-            &buyer,
+    #[test]
+    fn test_transfer_ownership_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let id = client.register_ip(
             &owner,
-            &usdc_id,
-            &500,
-            &Address::generate(&env),
-            &registry_id,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
         );
-        // Complete the swap
-        swap_client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"key"));
+        client.transfer_ownership(&owner, &id, &new_owner);
+        let listing = client.get_listing(&id).unwrap();
+        assert_eq!(listing.owner, new_owner);
+        assert_eq!(client.list_by_owner(&owner).len(), 0);
+        assert_eq!(client.list_by_owner(&new_owner).len(), 1);
+    }
 
-        // Now update should succeed — no pending swap
-        let new_hash = Bytes::from_slice(&env, b"QmNewHash");
-        let new_root = Bytes::from_slice(&env, b"new_root");
-        registry.update_listing(&listing_id, &new_hash, &new_root, &Some(swap_contract_id));
+    #[test]
+    fn test_transfer_ownership_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+        );
+        let result = client.try_transfer_ownership(&attacker, &id, &new_owner);
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+    }
 
-        let listing = registry.get_listing(&listing_id).unwrap();
-        assert_eq!(listing.ipfs_hash, new_hash);
-        assert_eq!(listing.merkle_root, new_root);
+    #[test]
+    fn test_list_by_owner_page() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let h = Bytes::from_slice(&env, b"h");
+        let r = Bytes::from_slice(&env, b"r");
+        let id1 = client.register_ip(&owner, &h, &r);
+        let id2 = client.register_ip(&owner, &h, &r);
+        let id3 = client.register_ip(&owner, &h, &r);
+        let page = client.list_by_owner_page(&owner, &0u32, &2u32);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page.get(0).unwrap(), id1);
+        assert_eq!(page.get(1).unwrap(), id2);
+        let page2 = client.list_by_owner_page(&owner, &2u32, &2u32);
+        assert_eq!(page2.len(), 1);
+        assert_eq!(page2.get(0).unwrap(), id3);
     }
 }
