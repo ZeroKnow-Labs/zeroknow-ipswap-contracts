@@ -584,6 +584,24 @@ impl AtomicSwap {
             .and_then(|swap| swap.decryption_key)
     }
 
+    /// Returns true if there is a pending swap for the given listing_id.
+    pub fn has_pending_swap(env: Env, listing_id: u64) -> bool {
+        if let Some(swap_id) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u64>(&DataKey::ActiveListingSwap(listing_id))
+        {
+            if let Some(swap) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Swap>(&DataKey::Swap(swap_id))
+            {
+                return swap.status == SwapStatus::Pending;
+            }
+        }
+        false
+    }
+
     pub fn get_swaps_by_buyer(env: Env, buyer: Address) -> soroban_sdk::Vec<u64> {
         env.storage()
             .persistent()

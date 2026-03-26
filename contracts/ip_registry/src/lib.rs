@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    Bytes, Env, Vec,
+    contract, contracterror, contractclient, contractevent, contractimpl, contracttype,
+    panic_with_error, Address, Bytes, Env, Vec,
 };
 
 /// Entry for batch IP registration: (ipfs_hash, merkle_root)
@@ -13,7 +13,14 @@ pub enum ContractError {
     InvalidInput = 1,
     CounterOverflow = 2,
     ListingNotFound = 3,
-    Unauthorized = 4,
+    PendingSwapExists = 4,
+    Unauthorized = 5,
+}
+
+/// Minimal interface to check for a pending swap on a listing.
+#[contractclient(name = "AtomicSwapClient")]
+pub trait AtomicSwapInterface {
+    fn has_pending_swap(env: Env, listing_id: u64) -> bool;
 }
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -268,6 +275,44 @@ impl IpRegistry {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Update ipfs_hash and/or merkle_root of an existing listing.
+    /// Requires owner auth. Rejects if a pending swap exists for the listing.
+    pub fn update_listing(
+        env: Env,
+        listing_id: u64,
+        new_ipfs_hash: Bytes,
+        new_merkle_root: Bytes,
+        atomic_swap: Option<Address>,
+    ) {
+        if new_ipfs_hash.is_empty() || new_merkle_root.is_empty() {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        let key = DataKey::Listing(listing_id);
+        let mut listing: Listing = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ListingNotFound));
+
+        listing.owner.require_auth();
+
+        if let Some(swap_addr) = atomic_swap {
+            if AtomicSwapClient::new(&env, &swap_addr).has_pending_swap(&listing_id) {
+                panic_with_error!(&env, ContractError::PendingSwapExists);
+            }
+        }
+
+        listing.ipfs_hash = new_ipfs_hash;
+        listing.merkle_root = new_merkle_root;
+        env.storage().persistent().set(&key, &listing);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+    }
+
     /// Remove a listing from the registry. Only the owner may call this.
     pub fn deregister_listing(
         env: Env,
@@ -275,6 +320,7 @@ impl IpRegistry {
         listing_id: u64,
     ) -> Result<(), ContractError> {
         owner.require_auth();
+
 
         let key = DataKey::Listing(listing_id);
         let listing: Listing = env
@@ -310,8 +356,8 @@ impl IpRegistry {
 mod test {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
-        Env,
+        testutils::{Address as _, Events as _, Ledger as _},
+        token, Env, Event,
     };
 
     fn register(
