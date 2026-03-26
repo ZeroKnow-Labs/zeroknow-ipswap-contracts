@@ -550,9 +550,9 @@ mod test {
             seller,
             &Bytes::from_slice(env, b"QmHash"),
             &Bytes::from_slice(env, b"root"),
-            &price_usdc,
             &0u32,
             seller,
+            &price_usdc,
         );
         (registry_id, listing_id)
     }
