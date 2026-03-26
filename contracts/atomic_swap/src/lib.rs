@@ -1658,4 +1658,115 @@ mod test {
         assert_eq!(usdc_client.balance(&fee_recipient), 1);
         assert_eq!(usdc_client.balance(&seller), 0);
     }
+
+    #[test]
+    fn test_get_swaps_by_seller_empty() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        let unknown_seller = Address::generate(&env);
+        assert_eq!(client.get_swaps_by_seller(&unknown_seller).len(), 0);
+    }
+
+    #[test]
+    fn test_get_swaps_by_seller_single() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 0);
+
+        let swap_id = pending_swap(
+            &env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id, 500,
+        );
+
+        let ids = client.get_swaps_by_seller(&seller);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids.get(0).unwrap(), swap_id);
+    }
+
+    #[test]
+    fn test_get_swaps_by_seller_multiple() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let (registry_id, listing_id1) = setup_registry(&env, &seller, 0);
+        let listing_id2 = IpRegistryClient::new(&env, &registry_id).register_ip(
+            &seller,
+            &Bytes::from_slice(&env, b"hash2"),
+            &Bytes::from_slice(&env, b"root2"),
+            &0u32,
+            &seller,
+            &0i128,
+        );
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+        );
+
+        let zk_verifier = Address::generate(&env);
+        let id1 = client.initiate_swap(
+            &listing_id1, &buyer, &seller, &usdc_id, &500, &zk_verifier, &registry_id,
+        );
+        let id2 = client.initiate_swap(
+            &listing_id2, &buyer, &seller, &usdc_id, &500, &zk_verifier, &registry_id,
+        );
+
+        let ids = client.get_swaps_by_seller(&seller);
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids.get(0).unwrap(), id1);
+        assert_eq!(ids.get(1).unwrap(), id2);
+    }
+
+    #[test]
+    fn test_is_listing_available_no_swap() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let seller = Address::generate(&env);
+        let (_, listing_id) = setup_registry(&env, &seller, 0);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        assert!(client.is_listing_available(&listing_id));
+    }
+
+    #[test]
+    fn test_is_listing_available_pending_swap() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 0);
+
+        pending_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id, 500);
+
+        assert!(!client.is_listing_available(&listing_id));
+    }
+
+    #[test]
+    fn test_is_listing_available_after_cancel() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 0);
+
+        let swap_id = pending_swap(
+            &env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id, 500,
+        );
+        env.ledger().with_mut(|li| li.timestamp = li.timestamp.saturating_add(61));
+        client.cancel_swap(&swap_id);
+
+        assert!(client.is_listing_available(&listing_id));
+    }
 }

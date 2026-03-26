@@ -42,12 +42,12 @@ impl ZkVerifier {
             }
         } else {
             env.storage().persistent().set(&owner_key, &owner);
-            env.storage().persistent().extend_ttl(
-                &owner_key,
-                PERSISTENT_TTL_LEDGERS,
-                PERSISTENT_TTL_LEDGERS,
-            );
         }
+        env.storage().persistent().extend_ttl(
+            &owner_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
         let key = DataKey::MerkleRoot(listing_id);
         env.storage().persistent().set(&key, &root);
         env.storage()
@@ -171,6 +171,47 @@ mod test {
         env.ledger().with_mut(|li| li.sequence_number += 5_000);
 
         assert_eq!(client.get_merkle_root(&42u64), Some(root));
+    }
+
+    #[test]
+    fn test_owner_ttl_extended_on_root_update() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let root1: BytesN<32> = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, b"root_v1"))
+            .into();
+        client.set_merkle_root(&owner, &1u64, &root1);
+
+        // Advance ledger close to TTL expiry
+        env.ledger()
+            .with_mut(|li| li.sequence_number += PERSISTENT_TTL_LEDGERS - 1);
+
+        // Update root — must also refresh Owner TTL
+        let root2: BytesN<32> = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, b"root_v2"))
+            .into();
+        client.set_merkle_root(&owner, &1u64, &root2);
+
+        // Advance again; owner key should still be alive (TTL was re-extended)
+        env.ledger()
+            .with_mut(|li| li.sequence_number += PERSISTENT_TTL_LEDGERS - 1);
+
+        // A different caller must still be rejected — owner key is alive
+        let attacker = Address::generate(&env);
+        let fake_root: BytesN<32> = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, b"fake"))
+            .into();
+        let result = std::panic::catch_unwind(|| {
+            client.set_merkle_root(&attacker, &1u64, &fake_root);
+        });
+        assert!(result.is_err(), "attacker should be rejected while owner key is alive");
     }
 
     #[test]
