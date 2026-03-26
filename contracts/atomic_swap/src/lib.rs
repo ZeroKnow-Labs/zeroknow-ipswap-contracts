@@ -203,7 +203,7 @@ pub fn unpause(env: Env) {
                 .storage()
                 .persistent()
                 .get(&DataKey::Swap(existing_swap_id))
-                .unwrap();
+                .unwrap_or_else(|| panic_with_error!(&env, ContractError::SwapNotFound));
             if existing_swap.status == SwapStatus::Pending && existing_swap.buyer != buyer {
                 env.panic_with_error(ContractError::SwapAlreadyPending);
             }
