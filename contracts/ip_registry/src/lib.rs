@@ -802,4 +802,12 @@ mod test {
         assert_eq!(page2.len(), 1);
         assert_eq!(page2.get(0).unwrap(), id3);
     }
+
+    #[test]
+    fn test_listing_count_zero_initial() {
+        let env = Env::default();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        assert_eq!(client.listing_count(), 0u64);
+    }
 }
