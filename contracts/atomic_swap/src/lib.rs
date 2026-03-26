@@ -429,7 +429,7 @@ impl AtomicSwap {
                 raw
             }
         };
-        let seller_amount = swap.usdc_amount - fee;
+        let mut seller_amount = swap.usdc_amount - fee;
         if fee > 0 {
             usdc.transfer(&contract_addr, &config.fee_recipient, &fee);
         }
@@ -510,7 +510,7 @@ impl AtomicSwap {
                 .get::<DataKey, Config>(&DataKey::Config)
             {
                 let fee: i128 = swap.usdc_amount * config.fee_bps as i128 / 10_000;
-                let seller_amount = swap.usdc_amount - fee;
+                let mut seller_amount = swap.usdc_amount - fee;
                 if fee > 0 {
                     usdc.transfer(&contract_addr, &config.fee_recipient, &fee);
                 }
