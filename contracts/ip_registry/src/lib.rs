@@ -22,6 +22,11 @@ pub struct Listing {
     pub owner: Address,
     pub ipfs_hash: Bytes,
     pub merkle_root: Bytes,
+    pub royalty_bps: u32,
+    pub royalty_recipient: Address,
+    /// Seller-set price in USDC (smallest unit). Buyers must pay at least this amount.
+    /// A value of 0 means no minimum price is enforced.
+    pub price_usdc: i128,
 }
 
 #[contracttype]
@@ -63,8 +68,11 @@ impl IpRegistry {
         owner: Address,
         ipfs_hash: Bytes,
         merkle_root: Bytes,
+        royalty_bps: u32,
+        royalty_recipient: Address,
+        price_usdc: i128,
     ) -> Result<u64, ContractError> {
-        if ipfs_hash.is_empty() || merkle_root.is_empty() {
+        if ipfs_hash.is_empty() || merkle_root.is_empty() || price_usdc < 0 {
             return Err(ContractError::InvalidInput);
         }
         owner.require_auth();
@@ -78,6 +86,14 @@ impl IpRegistry {
         let key = DataKey::Listing(id);
         env.storage().persistent().set(
             &key,
+            &Listing {
+                owner: owner.clone(),
+                ipfs_hash: ipfs_hash.clone(),
+                merkle_root: merkle_root.clone(),
+                royalty_bps,
+                royalty_recipient: royalty_recipient.clone(),
+                price_usdc,
+            },
             &Listing { owner: owner.clone(), ipfs_hash: ipfs_hash.clone(), merkle_root: merkle_root.clone() },
         );
         env.storage()
@@ -106,6 +122,7 @@ impl IpRegistry {
     }
 
     /// Register multiple IP listings in a single transaction. Returns listing IDs.
+    pub fn batch_register_ip(env: Env, owner: Address, entries: Vec<IpEntry>) -> Vec<u64> {
     /// Validates all entries before writing — fails atomically if any entry is invalid.
     pub fn batch_register_ip(
         env: Env,
@@ -145,6 +162,9 @@ impl IpRegistry {
                     owner: owner.clone(),
                     ipfs_hash: ipfs_hash.clone(),
                     merkle_root: merkle_root.clone(),
+                    royalty_bps: 0,
+                    royalty_recipient: owner.clone(),
+                    price_usdc: 0,
                 },
             );
             env.storage()
@@ -199,6 +219,7 @@ impl IpRegistry {
 
     /// Returns the total number of registered listings.
     pub fn listing_count(env: Env) -> u64 {
+        env.storage().instance().get(&DataKey::Counter).unwrap_or(0)
         env.storage()
             .instance()
             .get(&DataKey::Counter)
@@ -258,6 +279,18 @@ mod test {
         assert_eq!(client.listing_count(), 3);
     }
 
+    fn register(client: &IpRegistryClient, owner: &Address, hash: &[u8], root: &[u8], price: i128) -> u64 {
+        let env = &client.env;
+        client.register_ip(
+            owner,
+            &Bytes::from_slice(env, hash),
+            &Bytes::from_slice(env, root),
+            &0u32,
+            owner,
+            &price,
+        )
+    }
+
     #[test]
     fn test_register_and_get() {
         let env = Env::default();
@@ -285,7 +318,7 @@ mod test {
     }
 
     #[test]
-    fn test_owner_index() {
+    fn test_register_with_zero_price() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
@@ -313,14 +346,14 @@ mod test {
     }
 
     #[test]
-    fn test_listing_survives_ttl_boundary() {
+    fn test_register_rejects_negative_price() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
         let client = IpRegistryClient::new(&env, &contract_id);
 
         let owner = Address::generate(&env);
-        let id = client.register_ip(
+        let result = client.try_register_ip(
             &owner,
             &Bytes::from_slice(&env, b"QmHash"),
             &Bytes::from_slice(&env, b"root"),
@@ -362,9 +395,8 @@ mod test {
     }
 
     #[test]
-    fn test_batch_register_ip() {
+    fn test_get_listing_missing_returns_none() {
         let env = Env::default();
-        env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
         let client = IpRegistryClient::new(&env, &contract_id);
 
@@ -388,12 +420,13 @@ mod test {
     }
 
     #[test]
-    fn test_batch_register_ip_with_single_entry() {
+    fn test_listing_count() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
         let client = IpRegistryClient::new(&env, &contract_id);
 
+        assert_eq!(client.listing_count(), 0);
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
         entries.push_back((Bytes::from_slice(&env, b"QmSingle"), Bytes::from_slice(&env, b"single_root")));
@@ -418,7 +451,7 @@ mod test {
     }
 
     #[test]
-    fn test_batch_register_ip_rejects_empty_ipfs_hash() {
+    fn test_batch_register_ip() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
@@ -428,12 +461,15 @@ mod test {
         let mut entries: Vec<IpEntry> = Vec::new(&env);
         entries.push_back((Bytes::new(&env), Bytes::from_slice(&env, b"root")));
 
-        let result = client.try_batch_register_ip(&owner, &entries);
-        assert!(result.is_err());
+        let ids = client.batch_register_ip(&owner, &entries);
+        assert_eq!(ids.len(), 2);
+        assert!(client.get_listing(&ids.get(0).unwrap()).is_some());
+        assert!(client.get_listing(&ids.get(1).unwrap()).is_some());
+        assert_eq!(client.list_by_owner(&owner).len(), 2);
     }
 
     #[test]
-    fn test_batch_register_ip_rejects_empty_merkle_root() {
+    fn test_batch_register_ip_empty_list() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
@@ -448,7 +484,7 @@ mod test {
     }
 
     #[test]
-    fn test_batch_register_ip_atomic_failure() {
+    fn test_batch_register_ip_rejects_empty_ipfs_hash() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
@@ -465,7 +501,7 @@ mod test {
     }
 
     #[test]
-    fn test_batch_and_single_registration_work_together() {
+    fn test_batch_register_ip_atomic_failure() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
