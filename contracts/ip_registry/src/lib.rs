@@ -12,6 +12,8 @@ pub type IpEntry = (Bytes, Bytes);
 pub enum ContractError {
     InvalidInput = 1,
     CounterOverflow = 2,
+    ListingNotFound = 3,
+    Unauthorized = 4,
 }
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
