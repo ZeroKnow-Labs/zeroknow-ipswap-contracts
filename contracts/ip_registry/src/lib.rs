@@ -275,6 +275,25 @@ impl IpRegistry {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Get a paginated list of listing IDs for an owner.
+    /// Returns listing IDs starting at `offset` with a maximum of `limit` results.
+    pub fn list_by_owner_page(env: Env, owner: Address, offset: u32, limit: u32) -> Vec<u64> {
+        let all_listings = env.storage()
+            .persistent()
+            .get(&DataKey::OwnerIndex(owner))
+            .unwrap_or_else(|| Vec::new(&env));
+        
+        let offset_usize = offset as usize;
+        let limit_usize = limit as usize;
+        
+        if offset_usize >= all_listings.len() {
+            return Vec::new(&env);
+        }
+        
+        let end = std::cmp::min(offset_usize + limit_usize, all_listings.len());
+        all_listings.slice(offset_usize..end)
+    }
+
     /// Update ipfs_hash and/or merkle_root of an existing listing.
     /// Requires owner auth. Rejects if a pending swap exists for the listing.
     pub fn update_listing(
