@@ -454,7 +454,7 @@ impl AtomicSwap {
         let fee: i128 = {
             Self::calculate_fee_amount(&env, swap.usdc_amount, config.fee_bps)
         };
-        let mut seller_amount = swap.usdc_amount - fee;
+        let seller_amount = swap.usdc_amount - fee;
         if fee > 0 {
             usdc.transfer(&contract_addr, &config.fee_recipient, &fee);
         }
@@ -1224,7 +1224,6 @@ mod test {
 
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let zk_verifier = Address::generate(&env);
         let usdc_id = setup_usdc(&env, &buyer, 1000);
         let (registry_id, listing_id) = setup_registry(&env, &seller, 0);
 
@@ -1287,7 +1286,6 @@ mod test {
 
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let zk_verifier = Address::generate(&env);
         let usdc_id = setup_usdc(&env, &buyer, 1000);
         let usdc_client = token::Client::new(&env, &usdc_id);
         let (registry_id, listing_id) = setup_registry(&env, &seller, 0);
