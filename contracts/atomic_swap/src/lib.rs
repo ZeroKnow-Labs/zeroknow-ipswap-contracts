@@ -1423,6 +1423,60 @@ mod test {
         assert_eq!(usdc_client.balance(&buyer), 1000);
     }
 
+    #[test]
+    fn test_cancel_swap_emits_exactly_one_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let (registry_id, listing_id) = setup_registry(&env, &seller);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        let zk_id = env.register(ZkVerifier, ());
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &120u64,
+            &zk_id,
+        );
+
+        let swap_id = client.initiate_swap(
+            &listing_id, &buyer, &seller, &usdc_id, &500, &zk_id, &registry_id,
+        );
+
+        env.ledger().with_mut(|li| li.timestamp = li.timestamp.saturating_add(121));
+        client.cancel_swap(&swap_id);
+
+        let cancel_events: u32 = env
+            .events()
+            .all()
+            .iter()
+            .filter(|(c, topics, _)| {
+                *c == contract_id
+                    && topics.len() == 2
+                    && topics.get_unchecked(0)
+                        == soroban_sdk::Symbol::new(&env, "SwapCancelled").into()
+            })
+            .count() as u32;
+
+        assert_eq!(cancel_events, 1, "expected exactly one SwapCancelled event");
+
+        // Also verify the swap_id topic is correct
+        let found = env.events().all().iter().any(|(c, topics, _)| {
+            c == contract_id
+                && topics.len() == 2
+                && topics.get_unchecked(0)
+                    == soroban_sdk::Symbol::new(&env, "SwapCancelled").into()
+                && topics.get_unchecked(1) == swap_id.into()
+        });
+        assert!(found, "SwapCancelled event missing correct swap_id topic");
+    }
+
     // ── seller index ──────────────────────────────────────────────────────────
 
     #[test]
