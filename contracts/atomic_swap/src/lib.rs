@@ -436,12 +436,15 @@ impl AtomicSwap {
 
         let usdc = token::Client::new(&env, &swap.usdc_token);
         let contract_addr = env.current_contract_address();
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
 
         // Reject tiny amounts that would silently truncate protocol fees.
         let fee: i128 = {
             Self::calculate_fee_amount(&env, swap.usdc_amount, config.fee_bps)
-        };
-            }
         };
         let seller_amount = swap.usdc_amount - fee;
         if fee > 0 {
