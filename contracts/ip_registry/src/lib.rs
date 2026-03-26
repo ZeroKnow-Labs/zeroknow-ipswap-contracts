@@ -1,8 +1,5 @@
 #![no_std]
-use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    Bytes, Env, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, Address, Bytes, Env, Vec};
 
 /// Entry for batch IP registration: (ipfs_hash, merkle_root)
 pub type IpEntry = (Bytes, Bytes);
@@ -11,8 +8,11 @@ pub type IpEntry = (Bytes, Bytes);
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ContractError {
     InvalidInput = 1,
+<<<<<<< Implement-batch-reg
     CounterOverflow = 2,
     ListingNotFound = 3,
+=======
+>>>>>>> main
 }
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -23,6 +23,8 @@ pub struct Listing {
     pub owner: Address,
     pub ipfs_hash: Bytes,
     pub merkle_root: Bytes,
+    pub royalty_bps: u32,
+    pub royalty_recipient: Address,
 }
 
 #[contracttype]
@@ -32,6 +34,7 @@ pub enum DataKey {
     OwnerIndex(Address),
 }
 
+<<<<<<< Implement-batch-reg
 /// Emitted when a new IP listing is registered.
 #[contractevent]
 pub struct IpRegistered {
@@ -65,31 +68,31 @@ pub struct ListingTransferred {
     pub new_owner: Address,
 }
 
+=======
+>>>>>>> main
 #[contract]
 pub struct IpRegistry;
 
 #[contractimpl]
 impl IpRegistry {
     /// Register a new IP listing. Returns the listing ID.
-    pub fn register_ip(env: Env, owner: Address, ipfs_hash: Bytes, merkle_root: Bytes) -> u64 {
+    pub fn register_ip(
+        env: Env,
+        owner: Address,
+        ipfs_hash: Bytes,
+        merkle_root: Bytes,
+    ) -> Result<u64, ContractError> {
         if ipfs_hash.is_empty() || merkle_root.is_empty() {
-            panic_with_error!(&env, ContractError::InvalidInput);
+            return Err(ContractError::InvalidInput);
         }
         owner.require_auth();
-        let prev: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
-        let id: u64 = prev
-            .checked_add(1)
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
+        let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
         env.storage().instance().set(&DataKey::Counter, &id);
 
         let key = DataKey::Listing(id);
         env.storage().persistent().set(
             &key,
-            &Listing {
-                owner: owner.clone(),
-                ipfs_hash: ipfs_hash.clone(),
-                merkle_root: merkle_root.clone(),
-            },
+            &Listing { owner: owner.clone(), ipfs_hash, merkle_root },
         );
         env.storage()
             .persistent()
@@ -103,25 +106,14 @@ impl IpRegistry {
             .unwrap_or_else(|| Vec::new(&env));
         ids.push_back(id);
         env.storage().persistent().set(&idx_key, &ids);
-        env.storage().persistent().extend_ttl(
-            &idx_key,
-            PERSISTENT_TTL_LEDGERS,
-            PERSISTENT_TTL_LEDGERS,
-        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&idx_key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
 
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
-
-        IpRegistered {
-            listing_id: id,
-            owner,
-            ipfs_hash,
-            merkle_root,
-        }
-        .publish(&env);
-
-        id
+        Ok(id)
     }
 
     /// Register multiple IP listings in a single transaction. Returns listing IDs.
@@ -223,10 +215,11 @@ impl IpRegistry {
     }
 
     /// Retrieves a specific IP listing by its ID.
-    pub fn get_listing(env: Env, listing_id: u64) -> Option<Listing> {
+    pub fn get_listing(env: Env, listing_id: u64) -> Listing {
         env.storage()
             .persistent()
             .get(&DataKey::Listing(listing_id))
+            .expect("listing not found")
     }
 
     /// Retrieves all listing IDs owned by a specific address.
@@ -236,6 +229,7 @@ impl IpRegistry {
             .get(&DataKey::OwnerIndex(owner))
             .unwrap_or_else(|| Vec::new(&env))
     }
+<<<<<<< Implement-batch-reg
 
     /// Transfer ownership of a listing to another address.
     pub fn transfer_listing(env: Env, listing_id: u64, new_owner: Address) {
@@ -300,16 +294,14 @@ impl IpRegistry {
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
     }
+=======
+>>>>>>> main
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    extern crate std;
-    use soroban_sdk::{
-        testutils::{Address as _, Events as _, Ledger as _},
-        Env, Event,
-    };
+    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Env};
 
     #[test]
     fn test_register_and_get() {
@@ -322,36 +314,13 @@ mod test {
         let hash = Bytes::from_slice(&env, b"QmTestHash");
         let root = Bytes::from_slice(&env, b"merkle_root_bytes");
 
-        let id = client.register_ip(&owner, &hash, &root);
+        let id = client.register_ip(&owner, &hash, &root, &0, &owner);
         assert_eq!(id, 1);
 
-        let listing = client.get_listing(&id).expect("listing should exist");
+        let listing = client.get_listing(&id);
         assert_eq!(listing.owner, owner);
-    }
-
-    #[test]
-    fn test_register_ip_emits_event() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(IpRegistry, ());
-        let client = IpRegistryClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        let hash = Bytes::from_slice(&env, b"QmTestHash");
-        let root = Bytes::from_slice(&env, b"merkle_root_bytes");
-
-        let id = client.register_ip(&owner, &hash, &root);
-
-        let expected = IpRegistered {
-            listing_id: id,
-            owner: owner.clone(),
-            ipfs_hash: hash,
-            merkle_root: root,
-        };
-        assert_eq!(
-            env.events().all(),
-            std::vec![expected.to_xdr(&env, &contract_id)]
-        );
+        assert_eq!(listing.royalty_bps, 0);
+        assert_eq!(listing.royalty_recipient, owner);
     }
 
     #[test]
@@ -366,9 +335,9 @@ mod test {
         let hash = Bytes::from_slice(&env, b"QmHash");
         let root = Bytes::from_slice(&env, b"root");
 
-        let id1 = client.register_ip(&owner_a, &hash, &root);
-        let id2 = client.register_ip(&owner_b, &hash, &root);
-        let id3 = client.register_ip(&owner_a, &hash, &root);
+        let id1 = client.register_ip(&owner_a, &hash, &root, &0, &owner_a);
+        let id2 = client.register_ip(&owner_b, &hash, &root, &0, &owner_b);
+        let id3 = client.register_ip(&owner_a, &hash, &root, &0, &owner_a);
 
         let a_ids = client.list_by_owner(&owner_a);
         assert_eq!(a_ids.len(), 2);
@@ -395,21 +364,14 @@ mod test {
             &owner,
             &Bytes::from_slice(&env, b"QmHash"),
             &Bytes::from_slice(&env, b"root"),
+            &0,
+            &owner,
         );
 
         env.ledger().with_mut(|li| li.sequence_number += 5_000);
 
-        let listing = client.get_listing(&id).expect("listing should exist");
+        let listing = client.get_listing(&id);
         assert_eq!(listing.owner, owner);
-    }
-
-    #[test]
-    fn test_get_listing_missing_returns_none() {
-        let env = Env::default();
-        let contract_id = env.register(IpRegistry, ());
-        let client = IpRegistryClient::new(&env, &contract_id);
-
-        assert!(client.get_listing(&999).is_none());
     }
 
     #[test]
@@ -424,8 +386,10 @@ mod test {
             &owner,
             &Bytes::new(&env),
             &Bytes::from_slice(&env, b"merkle_root_bytes"),
+            &0,
+            &owner,
         );
-        assert!(result.is_err());
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
 
     #[test]
@@ -440,30 +404,10 @@ mod test {
             &owner,
             &Bytes::from_slice(&env, b"QmTestHash"),
             &Bytes::new(&env),
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_counter_overflow_panics() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(IpRegistry, ());
-        let client = IpRegistryClient::new(&env, &contract_id);
-
-        env.as_contract(&contract_id, || {
-            env.storage()
-                .instance()
-                .set(&DataKey::Counter, &u64::MAX);
-        });
-
-        let owner = Address::generate(&env);
-        let result = client.try_register_ip(
+            &0,
             &owner,
-            &Bytes::from_slice(&env, b"QmHash"),
-            &Bytes::from_slice(&env, b"root"),
         );
-        assert!(result.is_err());
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
 
     #[test]
