@@ -35,6 +35,7 @@ pub struct Config {
     pub fee_bps: u32,
     pub fee_recipient: Address,
     pub cancel_delay_secs: u64,
+    pub ip_registry: Address,
 }
 
 #[contracttype]
@@ -106,6 +107,7 @@ impl AtomicSwap {
         fee_bps: u32,
         fee_recipient: Address,
         cancel_delay_secs: u64,
+        ip_registry: Address,
     ) {
         if env.storage().instance().has(&DataKey::Config) {
             env.panic_with_error(ContractError::NotInitialized);
@@ -117,6 +119,7 @@ impl AtomicSwap {
                 fee_bps,
                 fee_recipient,
                 cancel_delay_secs,
+                ip_registry,
             },
         );
         env.storage()
@@ -293,6 +296,7 @@ pub fn unpause(env: Env) {
     /// * Panics if the caller is not the seller.
     /// * Panics if the token transfer fails.
     /// If a Config is present, a basis-point fee is deducted and sent to fee_recipient.
+    /// Royalty is deducted from the seller's amount and sent to royalty_recipient if set.
     pub fn confirm_swap(env: Env, swap_id: u64, decryption_key: Bytes) {
         Self::assert_not_paused(&env);
         if decryption_key.is_empty() {
@@ -312,16 +316,34 @@ pub fn unpause(env: Env) {
         let usdc = token::Client::new(&env, &swap.usdc_token);
         let contract_addr = env.current_contract_address();
 
+        let mut seller_amount = swap.usdc_amount;
         if let Some(config) = env
             .storage()
             .instance()
             .get::<DataKey, Config>(&DataKey::Config)
         {
+            // Deduct protocol fee
             let fee: i128 = swap.usdc_amount * config.fee_bps as i128 / 10_000;
-            let seller_amount = swap.usdc_amount - fee;
+            seller_amount = swap.usdc_amount - fee;
             if fee > 0 {
                 usdc.transfer(&contract_addr, &config.fee_recipient, &fee);
             }
+
+            // Get listing for royalty
+            let listing = IpRegistryClient::new(&env, &config.ip_registry)
+                .get_listing(&swap.listing_id)
+                .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+
+            // Deduct royalty
+            if listing.royalty_bps > 0 {
+                let royalty: i128 = seller_amount * listing.royalty_bps as i128 / 10_000;
+                if royalty > 0 {
+                    usdc.transfer(&contract_addr, &listing.royalty_recipient, &royalty);
+                }
+                seller_amount -= royalty;
+            }
+
+            // Send remaining to seller
             usdc.transfer(&contract_addr, &swap.seller, &seller_amount);
         } else {
             usdc.transfer(&contract_addr, &swap.seller, &swap.usdc_amount);
@@ -470,12 +492,18 @@ mod test {
     };
 
     fn setup_registry(env: &Env, seller: &Address) -> (Address, u64) {
+        setup_registry_with_royalty(env, seller, 0, seller)
+    }
+
+    fn setup_registry_with_royalty(env: &Env, seller: &Address, royalty_bps: u32, royalty_recipient: &Address) -> (Address, u64) {
         let registry_id = env.register(IpRegistry, ());
         let registry = IpRegistryClient::new(env, &registry_id);
         let listing_id = registry.register_ip(
             seller,
             &Bytes::from_slice(env, b"QmHash"),
             &Bytes::from_slice(env, b"root"),
+            &royalty_bps,
+            royalty_recipient,
         );
         (registry_id, listing_id)
     }
@@ -534,7 +562,7 @@ mod test {
         let client = AtomicSwapClient::new(&env, &contract_id);
 
         // 100 bps = 1%
-        client.initialize(&Address::generate(&env), &100u32, &fee_recipient, &60u64);
+        client.initialize(&Address::generate(&env), &100u32, &fee_recipient, &60u64, &registry_id);
 
         let swap_id = client.initiate_swap(
             &listing_id,
@@ -573,7 +601,7 @@ mod test {
         let client = AtomicSwapClient::new(&env, &contract_id);
 
         // 250 bps = 2.5%
-        client.initialize(&Address::generate(&env), &250u32, &fee_recipient, &60u64);
+        client.initialize(&Address::generate(&env), &250u32, &fee_recipient, &60u64, &registry_id);
 
         let swap_id = client.initiate_swap(
             &listing_id,
@@ -608,7 +636,7 @@ mod test {
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
 
-        client.initialize(&Address::generate(&env), &0u32, &fee_recipient, &60u64);
+        client.initialize(&Address::generate(&env), &0u32, &fee_recipient, &60u64, &registry_id);
 
         let swap_id = client.initiate_swap(
             &listing_id,
@@ -623,6 +651,45 @@ mod test {
 
         assert_eq!(usdc_client.balance(&seller), 1000);
         assert_eq!(usdc_client.balance(&fee_recipient), 0);
+    }
+
+    #[test]
+    fn test_royalty_deducted_and_sent_to_recipient() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let royalty_recipient = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 10_000);
+        let usdc_client = token::Client::new(&env, &usdc_id);
+        let (registry_id, listing_id) = setup_registry_with_royalty(&env, &seller, 500, &royalty_recipient); // 5% royalty
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        // 100 bps = 1% fee
+        client.initialize(&Address::generate(&env), &100u32, &fee_recipient, &60u64, &registry_id);
+
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &10_000,
+            &zk_verifier,
+            &registry_id,
+        );
+        client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"key"));
+
+        // fee = 10000 * 100 / 10000 = 100; seller_amount = 9900
+        // royalty = 9900 * 500 / 10000 = 495; seller gets 9900 - 495 = 9405
+        assert_eq!(usdc_client.balance(&seller), 9_405);
+        assert_eq!(usdc_client.balance(&royalty_recipient), 495);
+        assert_eq!(usdc_client.balance(&fee_recipient), 100);
     }
 
     #[test]
@@ -642,7 +709,7 @@ mod test {
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
 
-        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64);
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64, &registry_id);
         client.pause();
 
         client.initiate_swap(
@@ -673,7 +740,7 @@ mod test {
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
 
-        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64);
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64, &registry_id);
         let swap_id = client.initiate_swap(
             &listing_id,
             &buyer,
@@ -704,7 +771,7 @@ mod test {
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
 
-        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64);
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64, &registry_id);
         client.pause();
         client.unpause();
 
@@ -746,6 +813,8 @@ mod test {
             &seller,
             &Bytes::from_slice(&env, b"QmHash"),
             &Bytes::from_slice(&env, b"root"),
+            &0,
+            &seller,
         );
 
         let contract_id = env.register(AtomicSwap, ());
@@ -755,6 +824,7 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &60u64,
+            &registry_id,
         );
 
         // buyer1 initiates
@@ -801,6 +871,7 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &60u64,
+            &registry_id,
         );
 
         client.initiate_swap(
@@ -836,6 +907,8 @@ mod test {
             seller,
             &Bytes::from_slice(env, b"QmHash"),
             &Bytes::from_slice(env, b"root"),
+            &0,
+            seller,
         );
 
         let contract_id = env.register(AtomicSwap, ());
@@ -845,6 +918,7 @@ mod test {
             &0u32,
             &Address::generate(env),
             &60u64,
+            &registry_id,
         );
         (usdc_id, listing_id, registry_id, contract_id, client)
     }

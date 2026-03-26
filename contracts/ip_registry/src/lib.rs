@@ -19,6 +19,8 @@ pub struct Listing {
     pub owner: Address,
     pub ipfs_hash: Bytes,
     pub merkle_root: Bytes,
+    pub royalty_bps: u32,
+    pub royalty_recipient: Address,
 }
 
 #[contracttype]
@@ -37,6 +39,8 @@ pub struct IpRegistered {
     pub owner: Address,
     pub ipfs_hash: Bytes,
     pub merkle_root: Bytes,
+    pub royalty_bps: u32,
+    pub royalty_recipient: Address,
 }
 
 #[contract]
@@ -45,7 +49,7 @@ pub struct IpRegistry;
 #[contractimpl]
 impl IpRegistry {
     /// Register a new IP listing. Returns the listing ID.
-    pub fn register_ip(env: Env, owner: Address, ipfs_hash: Bytes, merkle_root: Bytes) -> u64 {
+    pub fn register_ip(env: Env, owner: Address, ipfs_hash: Bytes, merkle_root: Bytes, royalty_bps: u32, royalty_recipient: Address) -> u64 {
         if ipfs_hash.is_empty() || merkle_root.is_empty() {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
@@ -63,6 +67,8 @@ impl IpRegistry {
                 owner: owner.clone(),
                 ipfs_hash: ipfs_hash.clone(),
                 merkle_root: merkle_root.clone(),
+                royalty_bps,
+                royalty_recipient: royalty_recipient.clone(),
             },
         );
         env.storage()
@@ -92,6 +98,8 @@ impl IpRegistry {
             owner,
             ipfs_hash,
             merkle_root,
+            royalty_bps,
+            royalty_recipient,
         }
         .publish(&env);
 
@@ -196,11 +204,13 @@ mod test {
         let hash = Bytes::from_slice(&env, b"QmTestHash");
         let root = Bytes::from_slice(&env, b"merkle_root_bytes");
 
-        let id = client.register_ip(&owner, &hash, &root);
+        let id = client.register_ip(&owner, &hash, &root, &0, &owner);
         assert_eq!(id, 1);
 
         let listing = client.get_listing(&id).expect("listing should exist");
         assert_eq!(listing.owner, owner);
+        assert_eq!(listing.royalty_bps, 0);
+        assert_eq!(listing.royalty_recipient, owner);
     }
 
     #[test]
@@ -214,13 +224,15 @@ mod test {
         let hash = Bytes::from_slice(&env, b"QmTestHash");
         let root = Bytes::from_slice(&env, b"merkle_root_bytes");
 
-        let id = client.register_ip(&owner, &hash, &root);
+        let id = client.register_ip(&owner, &hash, &root, &0, &owner);
 
         let expected = IpRegistered {
             listing_id: id,
             owner: owner.clone(),
             ipfs_hash: hash,
             merkle_root: root,
+            royalty_bps: 0,
+            royalty_recipient: owner,
         };
         assert_eq!(
             env.events().all(),
@@ -240,9 +252,9 @@ mod test {
         let hash = Bytes::from_slice(&env, b"QmHash");
         let root = Bytes::from_slice(&env, b"root");
 
-        let id1 = client.register_ip(&owner_a, &hash, &root);
-        let id2 = client.register_ip(&owner_b, &hash, &root);
-        let id3 = client.register_ip(&owner_a, &hash, &root);
+        let id1 = client.register_ip(&owner_a, &hash, &root, &0, &owner_a);
+        let id2 = client.register_ip(&owner_b, &hash, &root, &0, &owner_b);
+        let id3 = client.register_ip(&owner_a, &hash, &root, &0, &owner_a);
 
         let a_ids = client.list_by_owner(&owner_a);
         assert_eq!(a_ids.len(), 2);
@@ -269,6 +281,8 @@ mod test {
             &owner,
             &Bytes::from_slice(&env, b"QmHash"),
             &Bytes::from_slice(&env, b"root"),
+            &0,
+            &owner,
         );
 
         env.ledger().with_mut(|li| li.sequence_number += 5_000);
@@ -298,6 +312,8 @@ mod test {
             &owner,
             &Bytes::new(&env),
             &Bytes::from_slice(&env, b"merkle_root_bytes"),
+            &0,
+            &owner,
         );
         assert!(result.is_err());
     }
@@ -314,6 +330,8 @@ mod test {
             &owner,
             &Bytes::from_slice(&env, b"QmTestHash"),
             &Bytes::new(&env),
+            &0,
+            &owner,
         );
         assert!(result.is_err());
     }
@@ -336,6 +354,8 @@ mod test {
             &owner,
             &Bytes::from_slice(&env, b"QmHash"),
             &Bytes::from_slice(&env, b"root"),
+            &0,
+            &owner,
         );
         assert!(result.is_err());
     }
