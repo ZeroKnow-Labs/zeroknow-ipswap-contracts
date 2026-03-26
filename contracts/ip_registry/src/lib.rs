@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error,
-    Address, Bytes, Env, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
+    Bytes, Env, Vec,
 };
 
 /// Entry for batch IP registration: (ipfs_hash, merkle_root)
@@ -87,35 +87,62 @@ impl IpRegistry {
         }
         owner.require_auth();
 
-        let prev: u64 = env.storage().persistent().get(&DataKey::Counter).unwrap_or(0);
+        let prev: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Counter)
+            .unwrap_or(0);
         let id: u64 = prev
             .checked_add(1)
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
         env.storage().persistent().set(&DataKey::Counter, &id);
         env.storage().persistent().extend_ttl(
-            &DataKey::Counter, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS,
+            &DataKey::Counter,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
         );
 
         let key = DataKey::Listing(id);
-        env.storage().persistent().set(&key, &Listing {
-            owner: owner.clone(),
-            ipfs_hash: ipfs_hash.clone(),
-            merkle_root: merkle_root.clone(),
-            royalty_bps,
-            royalty_recipient: royalty_recipient.clone(),
-            price_usdc,
-        });
-        env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage().persistent().set(
+            &key,
+            &Listing {
+                owner: owner.clone(),
+                ipfs_hash: ipfs_hash.clone(),
+                merkle_root: merkle_root.clone(),
+                royalty_bps,
+                royalty_recipient: royalty_recipient.clone(),
+                price_usdc,
+            },
+        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
 
         let idx_key = DataKey::OwnerIndex(owner.clone());
-        let mut ids: Vec<u64> = env.storage().persistent().get(&idx_key).unwrap_or_else(|| Vec::new(&env));
+        let mut ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&idx_key)
+            .unwrap_or_else(|| Vec::new(&env));
         ids.push_back(id);
         env.storage().persistent().set(&idx_key, &ids);
-        env.storage().persistent().extend_ttl(&idx_key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage().persistent().extend_ttl(
+            &idx_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
 
-        env.storage().instance().extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
 
-        IpRegistered { listing_id: id, owner, ipfs_hash, merkle_root }.publish(&env);
+        IpRegistered {
+            listing_id: id,
+            owner,
+            ipfs_hash,
+            merkle_root,
+        }
+        .publish(&env);
 
         Ok(id)
     }
@@ -140,58 +167,101 @@ impl IpRegistry {
         while j < entries.len() {
             let (ipfs_hash, merkle_root) = entries.get(j).unwrap();
 
-            let prev: u64 = env.storage().persistent().get(&DataKey::Counter).unwrap_or(0);
+            let prev: u64 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Counter)
+                .unwrap_or(0);
             let id: u64 = prev
                 .checked_add(1)
                 .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
             env.storage().persistent().set(&DataKey::Counter, &id);
             env.storage().persistent().extend_ttl(
-                &DataKey::Counter, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS,
+                &DataKey::Counter,
+                PERSISTENT_TTL_LEDGERS,
+                PERSISTENT_TTL_LEDGERS,
             );
 
             let key = DataKey::Listing(id);
-            env.storage().persistent().set(&key, &Listing {
-                owner: owner.clone(),
-                ipfs_hash: ipfs_hash.clone(),
-                merkle_root: merkle_root.clone(),
-                royalty_bps: 0,
-                royalty_recipient: owner.clone(),
-                price_usdc: 0,
-            });
-            env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+            env.storage().persistent().set(
+                &key,
+                &Listing {
+                    owner: owner.clone(),
+                    ipfs_hash: ipfs_hash.clone(),
+                    merkle_root: merkle_root.clone(),
+                    royalty_bps: 0,
+                    royalty_recipient: owner.clone(),
+                    price_usdc: 0,
+                },
+            );
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_TTL_LEDGERS,
+                PERSISTENT_TTL_LEDGERS,
+            );
 
             let idx_key = DataKey::OwnerIndex(owner.clone());
-            let mut ids: Vec<u64> = env.storage().persistent().get(&idx_key).unwrap_or_else(|| Vec::new(&env));
+            let mut ids: Vec<u64> = env
+                .storage()
+                .persistent()
+                .get(&idx_key)
+                .unwrap_or_else(|| Vec::new(&env));
             ids.push_back(id);
             env.storage().persistent().set(&idx_key, &ids);
-            env.storage().persistent().extend_ttl(&idx_key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &idx_key,
+                PERSISTENT_TTL_LEDGERS,
+                PERSISTENT_TTL_LEDGERS,
+            );
 
             listing_ids.push_back(id);
             ipfs_hashes.push_back(ipfs_hash.clone());
             merkle_roots.push_back(merkle_root.clone());
 
-            IpRegistered { listing_id: id, owner: owner.clone(), ipfs_hash, merkle_root }.publish(&env);
+            IpRegistered {
+                listing_id: id,
+                owner: owner.clone(),
+                ipfs_hash,
+                merkle_root,
+            }
+            .publish(&env);
 
             j += 1;
         }
 
-        env.storage().instance().extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
 
-        BatchIpRegistered { owner, listing_ids: listing_ids.clone(), ipfs_hashes, merkle_roots }.publish(&env);
+        BatchIpRegistered {
+            owner,
+            listing_ids: listing_ids.clone(),
+            ipfs_hashes,
+            merkle_roots,
+        }
+        .publish(&env);
 
         listing_ids
     }
 
     pub fn get_listing(env: Env, listing_id: u64) -> Option<Listing> {
-        env.storage().persistent().get(&DataKey::Listing(listing_id))
+        env.storage()
+            .persistent()
+            .get(&DataKey::Listing(listing_id))
     }
 
     pub fn listing_count(env: Env) -> u64 {
-        env.storage().persistent().get(&DataKey::Counter).unwrap_or(0)
+        env.storage()
+            .persistent()
+            .get(&DataKey::Counter)
+            .unwrap_or(0)
     }
 
     pub fn list_by_owner(env: Env, owner: Address) -> Vec<u64> {
-        env.storage().persistent().get(&DataKey::OwnerIndex(owner)).unwrap_or_else(|| Vec::new(&env))
+        env.storage()
+            .persistent()
+            .get(&DataKey::OwnerIndex(owner))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Remove a listing from the registry. Only the owner may call this.
@@ -235,9 +305,18 @@ impl IpRegistry {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Env};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger as _},
+        Env,
+    };
 
-    fn register(client: &IpRegistryClient, owner: &Address, hash: &[u8], root: &[u8], price: i128) -> u64 {
+    fn register(
+        client: &IpRegistryClient,
+        owner: &Address,
+        hash: &[u8],
+        root: &[u8],
+        price: i128,
+    ) -> u64 {
         let env = &client.env;
         client.register_ip(
             owner,
@@ -280,7 +359,12 @@ mod test {
         let client = IpRegistryClient::new(&env, &contract_id);
         let owner = Address::generate(&env);
         let result = client.try_register_ip(
-            &owner, &Bytes::new(&env), &Bytes::from_slice(&env, b"root"), &0u32, &owner, &0i128,
+            &owner,
+            &Bytes::new(&env),
+            &Bytes::from_slice(&env, b"root"),
+            &0u32,
+            &owner,
+            &0i128,
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
@@ -293,7 +377,12 @@ mod test {
         let client = IpRegistryClient::new(&env, &contract_id);
         let owner = Address::generate(&env);
         let result = client.try_register_ip(
-            &owner, &Bytes::from_slice(&env, b"QmHash"), &Bytes::new(&env), &0u32, &owner, &0i128,
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::new(&env),
+            &0u32,
+            &owner,
+            &0i128,
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
@@ -306,8 +395,12 @@ mod test {
         let client = IpRegistryClient::new(&env, &contract_id);
         let owner = Address::generate(&env);
         let result = client.try_register_ip(
-            &owner, &Bytes::from_slice(&env, b"QmHash"), &Bytes::from_slice(&env, b"root"),
-            &0u32, &owner, &-1i128,
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &0u32,
+            &owner,
+            &-1i128,
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
@@ -417,8 +510,14 @@ mod test {
         let client = IpRegistryClient::new(&env, &contract_id);
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
-        entries.push_back((Bytes::from_slice(&env, b"QmHash1"), Bytes::from_slice(&env, b"root1")));
-        entries.push_back((Bytes::from_slice(&env, b"QmHash2"), Bytes::from_slice(&env, b"root2")));
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash1"),
+            Bytes::from_slice(&env, b"root1"),
+        ));
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash2"),
+            Bytes::from_slice(&env, b"root2"),
+        ));
         let ids = client.batch_register_ip(&owner, &entries);
         assert_eq!(ids.len(), 2);
         assert_eq!(ids.get(0).unwrap(), 1);
@@ -459,7 +558,10 @@ mod test {
         let client = IpRegistryClient::new(&env, &contract_id);
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
-        entries.push_back((Bytes::from_slice(&env, b"QmHash1"), Bytes::from_slice(&env, b"root1")));
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash1"),
+            Bytes::from_slice(&env, b"root1"),
+        ));
         entries.push_back((Bytes::new(&env), Bytes::from_slice(&env, b"root2")));
         assert!(client.try_batch_register_ip(&owner, &entries).is_err());
         assert_eq!(client.listing_count(), 0);
