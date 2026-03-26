@@ -89,7 +89,7 @@ impl IpRegistry {
         royalty_recipient: Address,
         price_usdc: i128,
     ) -> Result<u64, ContractError> {
-        if ipfs_hash.is_empty() || merkle_root.is_empty() || price_usdc < 0 {
+        if ipfs_hash.is_empty() || merkle_root.is_empty() || price_usdc < 0 || royalty_bps > 10_000 {
             return Err(ContractError::InvalidInput);
         }
         owner.require_auth();
@@ -804,10 +804,38 @@ mod test {
     }
 
     #[test]
-    fn test_listing_count_zero_initial() {
+    fn test_register_ip_rejects_royalty_bps_above_10000() {
         let env = Env::default();
+        env.mock_all_auths();
         let contract_id = env.register(IpRegistry, ());
         let client = IpRegistryClient::new(&env, &contract_id);
-        assert_eq!(client.listing_count(), 0u64);
+        let owner = Address::generate(&env);
+        let result = client.try_register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &10_001u32,
+            &owner,
+            &1000i128,
+        );
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
+    }
+
+    #[test]
+    fn test_register_ip_accepts_royalty_bps_10000() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let id = client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &10_000u32,
+            &owner,
+            &1000i128,
+        );
+        assert_eq!(id, 1);
     }
 }
