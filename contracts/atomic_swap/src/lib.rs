@@ -764,6 +764,40 @@ mod test {
     }
 
     #[test]
+    fn test_swap_initiated_event_emitted() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let (registry_id, listing_id) = setup_registry(&env, &seller);
+        let key_bytes = Bytes::from_slice(&env, b"secret-key");
+        let (zk_id, _proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(&Address::generate(&env), &100u32, &fee_recipient, &60u64, &zk_id);
+
+        let swap_id = client.initiate_swap(
+            &listing_id, &buyer, &seller, &usdc_id, &500, &zk_id, &registry_id,
+        );
+
+        let events = env.events().all();
+        let found = events.iter().any(|(emitting_contract, topics, _data)| {
+            emitting_contract == contract_id
+                && topics.len() == 3
+                && topics.get_unchecked(0)
+                    == soroban_sdk::Symbol::new(&env, "SwapInitiated").into()
+                && topics.get_unchecked(1) == swap_id.into()
+                && topics.get_unchecked(2) == listing_id.into()
+        });
+        assert!(found, "SwapInitiated event was not emitted");
+    }
+
+    #[test]
     fn test_fee_deducted_and_sent_to_recipient() {
         let env = Env::default();
         env.mock_all_auths();
