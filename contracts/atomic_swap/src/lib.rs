@@ -547,6 +547,24 @@ impl AtomicSwap {
             .map(|swap| swap.status)
     }
 
+    /// Retrieves the full Swap struct for a given swap ID.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment.
+    /// * `swap_id` - The ID of the swap.
+    ///
+    /// # Returns
+    /// Returns `Some(Swap)` containing all swap details (buyer, seller, listing_id, amount, etc.)
+    /// if the swap exists, or `None` if it does not.
+    ///
+    /// # Panics
+    /// This view function does not panic under normal conditions.
+    pub fn get_swap(env: Env, swap_id: u64) -> Option<Swap> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Swap(swap_id))
+    }
+
     /// Returns the decryption key once the swap is completed.
     pub fn get_decryption_key(env: Env, swap_id: u64) -> Option<Bytes> {
         env.storage()
