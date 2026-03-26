@@ -1,8 +1,8 @@
 #![no_std]
 use ip_registry::IpRegistryClient;
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error,
-    token, Address, Bytes, Env,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token,
+    Address, Bytes, Env,
 };
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
@@ -121,11 +121,16 @@ impl AtomicSwap {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(
             &DataKey::Config,
-            &Config { fee_bps, fee_recipient, cancel_delay_secs },
+            &Config {
+                fee_bps,
+                fee_recipient,
+                cancel_delay_secs,
+            },
         );
-        env.storage()
-            .instance()
-            .set(&DataKey::DisputeWindowLedgers, &DEFAULT_DISPUTE_WINDOW_LEDGERS);
+        env.storage().instance().set(
+            &DataKey::DisputeWindowLedgers,
+            &DEFAULT_DISPUTE_WINDOW_LEDGERS,
+        );
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
@@ -138,7 +143,9 @@ impl AtomicSwap {
             .get(&DataKey::Admin)
             .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
         admin.require_auth();
-        env.storage().instance().set(&DataKey::DisputeWindowLedgers, &ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::DisputeWindowLedgers, &ledgers);
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
@@ -171,7 +178,11 @@ impl AtomicSwap {
     }
 
     fn assert_not_paused(env: &Env) {
-        let paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
         if paused {
             panic_with_error!(&env, ContractError::ContractPaused);
         }
@@ -234,7 +245,7 @@ impl AtomicSwap {
 
         token::Client::new(&env, &usdc_token).transfer(
             &buyer,
-            &env.current_contract_address(),
+            env.current_contract_address(),
             &usdc_amount,
         );
 
@@ -262,9 +273,11 @@ impl AtomicSwap {
             .persistent()
             .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
         env.storage().persistent().set(&active_listing_key, &id);
-        env.storage()
-            .persistent()
-            .extend_ttl(&active_listing_key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage().persistent().extend_ttl(
+            &active_listing_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
@@ -277,9 +290,11 @@ impl AtomicSwap {
             .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
         buyer_ids.push_back(id);
         env.storage().persistent().set(&buyer_key, &buyer_ids);
-        env.storage()
-            .persistent()
-            .extend_ttl(&buyer_key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage().persistent().extend_ttl(
+            &buyer_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
 
         let seller_key = DataKey::SellerIndex(seller.clone());
         let mut seller_ids: soroban_sdk::Vec<u64> = env
@@ -289,11 +304,20 @@ impl AtomicSwap {
             .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
         seller_ids.push_back(id);
         env.storage().persistent().set(&seller_key, &seller_ids);
-        env.storage()
-            .persistent()
-            .extend_ttl(&seller_key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.storage().persistent().extend_ttl(
+            &seller_key,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
 
-        SwapInitiated { swap_id: id, listing_id, buyer, seller, usdc_amount }.publish(&env);
+        SwapInitiated {
+            swap_id: id,
+            listing_id,
+            buyer,
+            seller,
+            usdc_amount,
+        }
+        .publish(&env);
 
         id
     }
@@ -325,7 +349,12 @@ impl AtomicSwap {
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
 
-        SwapConfirmed { swap_id, seller: swap.seller, decryption_key }.publish(&env);
+        SwapConfirmed {
+            swap_id,
+            seller: swap.seller,
+            decryption_key,
+        }
+        .publish(&env);
     }
 
     pub fn release_to_seller(env: Env, swap_id: u64) {
@@ -339,7 +368,9 @@ impl AtomicSwap {
             env.panic_with_error(ContractError::SwapNotCompleted);
         }
 
-        let confirmed_at = swap.confirmed_at_ledger.expect("confirmed_at_ledger missing");
+        let confirmed_at = swap
+            .confirmed_at_ledger
+            .expect("confirmed_at_ledger missing");
         let window: u32 = env
             .storage()
             .instance()
@@ -353,7 +384,11 @@ impl AtomicSwap {
         let usdc = token::Client::new(&env, &swap.usdc_token);
         let contract_addr = env.current_contract_address();
 
-        if let Some(config) = env.storage().instance().get::<DataKey, Config>(&DataKey::Config) {
+        if let Some(config) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Config>(&DataKey::Config)
+        {
             let fee: i128 = swap.usdc_amount * config.fee_bps as i128 / 10_000;
             let seller_amount = swap.usdc_amount - fee;
             if fee > 0 {
@@ -386,7 +421,9 @@ impl AtomicSwap {
         }
         swap.buyer.require_auth();
 
-        let confirmed_at = swap.confirmed_at_ledger.expect("confirmed_at_ledger missing");
+        let confirmed_at = swap
+            .confirmed_at_ledger
+            .expect("confirmed_at_ledger missing");
         let window: u32 = env
             .storage()
             .instance()
@@ -431,7 +468,11 @@ impl AtomicSwap {
             usdc.transfer(&contract_addr, &swap.buyer, &swap.usdc_amount);
             swap.status = SwapStatus::ResolvedBuyer;
         } else {
-            if let Some(config) = env.storage().instance().get::<DataKey, Config>(&DataKey::Config) {
+            if let Some(config) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Config>(&DataKey::Config)
+            {
                 let fee: i128 = swap.usdc_amount * config.fee_bps as i128 / 10_000;
                 let seller_amount = swap.usdc_amount - fee;
                 if fee > 0 {
@@ -481,7 +522,12 @@ impl AtomicSwap {
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
 
-        SwapCancelled { swap_id, buyer: swap.buyer, usdc_amount: swap.usdc_amount }.publish(&env);
+        SwapCancelled {
+            swap_id,
+            buyer: swap.buyer,
+            usdc_amount: swap.usdc_amount,
+        }
+        .publish(&env);
     }
 
     pub fn get_swap_status(env: Env, swap_id: u64) -> Option<SwapStatus> {
@@ -541,7 +587,10 @@ impl AtomicSwap {
 mod test {
     use super::*;
     use ip_registry::{IpRegistry, IpRegistryClient};
-    use soroban_sdk::{testutils::{Address as _, Ledger as _}, token, Bytes, Env};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger as _},
+        token, Bytes, Env,
+    };
 
     fn setup_registry(env: &Env, seller: &Address, price_usdc: i128) -> (Address, u64) {
         let registry_id = env.register(IpRegistry, ());
@@ -559,7 +608,9 @@ mod test {
 
     fn setup_usdc(env: &Env, buyer: &Address, amount: i128) -> Address {
         let admin = Address::generate(env);
-        let usdc_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
         token::StellarAssetClient::new(env, &usdc_id).mint(buyer, &amount);
         usdc_id
     }
@@ -570,7 +621,14 @@ mod test {
         seller: &Address,
         usdc_amount: i128,
         price_usdc: i128,
-    ) -> (Address, u64, Address, Address, AtomicSwapClient<'a>, Address) {
+    ) -> (
+        Address,
+        u64,
+        Address,
+        Address,
+        AtomicSwapClient<'a>,
+        Address,
+    ) {
         let usdc_id = setup_usdc(env, buyer, usdc_amount);
         let (registry_id, listing_id) = setup_registry(env, seller, price_usdc);
         let contract_id = env.register(AtomicSwap, ());
@@ -579,6 +637,28 @@ mod test {
         let fee_recipient = Address::generate(env);
         client.initialize(&admin, &0u32, &fee_recipient, &60u64);
         (usdc_id, listing_id, registry_id, contract_id, client, admin)
+    }
+
+    fn pending_swap(
+        env: &Env,
+        client: &AtomicSwapClient,
+        listing_id: u64,
+        buyer: &Address,
+        seller: &Address,
+        usdc_id: &Address,
+        registry_id: &Address,
+        usdc_amount: i128,
+    ) -> u64 {
+        let zk_verifier = Address::generate(env);
+        client.initiate_swap(
+            &listing_id,
+            buyer,
+            seller,
+            usdc_id,
+            &usdc_amount,
+            &zk_verifier,
+            registry_id,
+        )
     }
 
     // ── price enforcement tests ───────────────────────────────────────────────
@@ -596,7 +676,15 @@ mod test {
         let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
             setup_full(&env, &buyer, &seller, 1000, 1000);
 
-        client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &500, &zk_verifier, &registry_id);
+        client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
     }
 
     #[test]
@@ -610,7 +698,15 @@ mod test {
         let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
             setup_full(&env, &buyer, &seller, 1000, 1000);
 
-        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &1000, &zk_verifier, &registry_id);
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &1000,
+            &zk_verifier,
+            &registry_id,
+        );
         assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Pending));
     }
 
@@ -626,7 +722,15 @@ mod test {
         let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
             setup_full(&env, &buyer, &seller, 1000, 500);
 
-        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &1000, &zk_verifier, &registry_id);
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &1000,
+            &zk_verifier,
+            &registry_id,
+        );
         assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Pending));
     }
 
@@ -642,8 +746,184 @@ mod test {
         let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
             setup_full(&env, &buyer, &seller, 1000, 0);
 
-        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &1, &zk_verifier, &registry_id);
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &1,
+            &zk_verifier,
+            &registry_id,
+        );
         assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Pending));
+    }
+
+    #[test]
+    fn test_happy_path_initiate_confirm_release_to_seller() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, contract_id, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 500);
+        let usdc_client = token::Client::new(&env, &usdc_id);
+
+        let swap_id = pending_swap(
+            &env,
+            &client,
+            listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &registry_id,
+            500,
+        );
+
+        assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Pending));
+        assert_eq!(usdc_client.balance(&buyer), 0);
+        assert_eq!(usdc_client.balance(&contract_id), 500);
+
+        client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"secret-key"));
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::Completed)
+        );
+
+        client.set_dispute_window(&10u32);
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.release_to_seller(&swap_id);
+
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::ResolvedSeller)
+        );
+        assert_eq!(usdc_client.balance(&seller), 500);
+        assert_eq!(usdc_client.balance(&buyer), 0);
+        assert_eq!(usdc_client.balance(&contract_id), 0);
+    }
+
+    #[test]
+    fn test_cancel_flow_returns_usdc_to_buyer() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, contract_id, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 500);
+        let usdc_client = token::Client::new(&env, &usdc_id);
+
+        let swap_id = pending_swap(
+            &env,
+            &client,
+            listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &registry_id,
+            500,
+        );
+
+        assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Pending));
+        assert_eq!(usdc_client.balance(&buyer), 0);
+        assert_eq!(usdc_client.balance(&contract_id), 500);
+
+        env.ledger()
+            .with_mut(|li| li.timestamp = li.timestamp.saturating_add(61));
+        client.cancel_swap(&swap_id);
+
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::Cancelled)
+        );
+        assert_eq!(usdc_client.balance(&buyer), 500);
+        assert_eq!(usdc_client.balance(&seller), 0);
+        assert_eq!(usdc_client.balance(&contract_id), 0);
+    }
+
+    #[test]
+    fn test_double_confirm_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _contract_id, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 500);
+
+        let swap_id = pending_swap(
+            &env,
+            &client,
+            listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &registry_id,
+            500,
+        );
+
+        client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"secret-key"));
+
+        let second_confirm =
+            client.try_confirm_swap(&swap_id, &Bytes::from_slice(&env, b"another-key"));
+
+        assert_eq!(
+            second_confirm,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::SwapNotPending as u32,
+            )))
+        );
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::Completed)
+        );
+        assert_eq!(
+            client.get_decryption_key(&swap_id),
+            Some(Bytes::from_slice(&env, b"secret-key"))
+        );
+    }
+
+    #[test]
+    fn test_double_cancel_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, contract_id, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 500);
+        let usdc_client = token::Client::new(&env, &usdc_id);
+
+        let swap_id = pending_swap(
+            &env,
+            &client,
+            listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &registry_id,
+            500,
+        );
+
+        env.ledger()
+            .with_mut(|li| li.timestamp = li.timestamp.saturating_add(61));
+        client.cancel_swap(&swap_id);
+
+        let second_cancel = client.try_cancel_swap(&swap_id);
+
+        assert_eq!(
+            second_cancel,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::SwapNotPending as u32,
+            )))
+        );
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::Cancelled)
+        );
+        assert_eq!(usdc_client.balance(&buyer), 500);
+        assert_eq!(usdc_client.balance(&contract_id), 0);
     }
 
     // ── existing tests ────────────────────────────────────────────────────────
@@ -683,7 +963,15 @@ mod test {
         let client = AtomicSwapClient::new(&env, &contract_id);
         client.initialize(&Address::generate(&env), &250u32, &fee_recipient, &60u64);
 
-        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &10_000, &zk_verifier, &registry_id);
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &10_000,
+            &zk_verifier,
+            &registry_id,
+        );
         client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"key"));
 
         client.set_dispute_window(&10u32);
@@ -712,7 +1000,15 @@ mod test {
         let client = AtomicSwapClient::new(&env, &contract_id);
         client.initialize(&Address::generate(&env), &0u32, &fee_recipient, &60u64);
 
-        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &1000, &zk_verifier, &registry_id);
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &1000,
+            &zk_verifier,
+            &registry_id,
+        );
         client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"key"));
 
         client.set_dispute_window(&10u32);
@@ -737,10 +1033,23 @@ mod test {
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
-        client.initialize(&Address::generate(&env), &0u32, &Address::generate(&env), &60u64);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+        );
         client.pause();
 
-        client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &500, &zk_verifier, &registry_id);
+        client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
     }
 
     #[test]
@@ -758,9 +1067,22 @@ mod test {
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
-        client.initialize(&Address::generate(&env), &0u32, &Address::generate(&env), &60u64);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+        );
 
-        client.initiate_swap(&listing_id, &buyer, &impersonator, &usdc_id, &500, &zk_verifier, &registry_id);
+        client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &impersonator,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
     }
 
     #[test]
@@ -777,9 +1099,22 @@ mod test {
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
-        client.initialize(&Address::generate(&env), &0u32, &Address::generate(&env), &120u64);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &120u64,
+        );
 
-        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &500, &zk_verifier, &registry_id);
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
         client.cancel_swap(&swap_id);
     }
 
@@ -797,13 +1132,30 @@ mod test {
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
-        client.initialize(&Address::generate(&env), &0u32, &Address::generate(&env), &120u64);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &120u64,
+        );
 
-        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &500, &zk_verifier, &registry_id);
-        env.ledger().with_mut(|li| li.timestamp = li.timestamp.saturating_add(121));
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+        env.ledger()
+            .with_mut(|li| li.timestamp = li.timestamp.saturating_add(121));
         client.cancel_swap(&swap_id);
 
-        assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Cancelled));
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::Cancelled)
+        );
         assert_eq!(usdc_client.balance(&buyer), 1000);
     }
 
@@ -816,8 +1168,16 @@ mod test {
         usdc_id: &Address,
         registry_id: &Address,
     ) -> u64 {
-        let zk_verifier = Address::generate(env);
-        let swap_id = client.initiate_swap(&listing_id, buyer, seller, usdc_id, &500, &zk_verifier, registry_id);
+        let swap_id = pending_swap(
+            env,
+            client,
+            listing_id,
+            buyer,
+            seller,
+            usdc_id,
+            registry_id,
+            500,
+        );
         client.confirm_swap(&swap_id, &Bytes::from_slice(env, b"bad-key"));
         swap_id
     }
@@ -832,7 +1192,15 @@ mod test {
         let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
             setup_full(&env, &buyer, &seller, 500, 0);
 
-        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id);
+        let swap_id = confirmed_swap(
+            &env,
+            &client,
+            listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &registry_id,
+        );
         client.raise_dispute(&swap_id);
         assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Disputed));
     }
@@ -849,7 +1217,15 @@ mod test {
             setup_full(&env, &buyer, &seller, 500, 0);
 
         client.set_dispute_window(&10u32);
-        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id);
+        let swap_id = confirmed_swap(
+            &env,
+            &client,
+            listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &registry_id,
+        );
         env.ledger().with_mut(|li| li.sequence_number += 11);
         client.raise_dispute(&swap_id);
     }
@@ -865,11 +1241,22 @@ mod test {
             setup_full(&env, &buyer, &seller, 500, 0);
         let usdc_client = token::Client::new(&env, &usdc_id);
 
-        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id);
+        let swap_id = confirmed_swap(
+            &env,
+            &client,
+            listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &registry_id,
+        );
         client.raise_dispute(&swap_id);
         client.resolve_dispute(&swap_id, &true);
 
-        assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::ResolvedBuyer));
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::ResolvedBuyer)
+        );
         assert_eq!(usdc_client.balance(&buyer), 500);
     }
 
@@ -884,11 +1271,22 @@ mod test {
             setup_full(&env, &buyer, &seller, 500, 0);
         let usdc_client = token::Client::new(&env, &usdc_id);
 
-        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id);
+        let swap_id = confirmed_swap(
+            &env,
+            &client,
+            listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &registry_id,
+        );
         client.raise_dispute(&swap_id);
         client.resolve_dispute(&swap_id, &false);
 
-        assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::ResolvedSeller));
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::ResolvedSeller)
+        );
         assert_eq!(usdc_client.balance(&seller), 500);
     }
 }
