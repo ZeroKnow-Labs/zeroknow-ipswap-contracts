@@ -374,6 +374,11 @@ pub fn unpause(env: Env) {
         env.storage()
             .persistent()
             .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+
+        // Remove active listing swap since it's completed
+        let active_listing_key = DataKey::ActiveListingSwap(swap.listing_id);
+        env.storage().persistent().remove(&active_listing_key);
+
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
@@ -421,6 +426,11 @@ pub fn unpause(env: Env) {
         );
         swap.status = SwapStatus::Cancelled;
         env.storage().persistent().set(&key, &swap);
+
+        // Remove active listing swap since it's cancelled
+        let active_listing_key = DataKey::ActiveListingSwap(swap.listing_id);
+        env.storage().persistent().remove(&active_listing_key);
+
         env.events()
             .publish((symbol_short!("cancelled"), swap_id), swap.buyer.clone());
         env.storage()
@@ -497,6 +507,35 @@ pub fn unpause(env: Env) {
             .persistent()
             .get(&DataKey::SellerIndex(seller))
             .unwrap_or_else(|| soroban_sdk::Vec::new(&env))
+    }
+
+    /// Checks if a listing is available for purchase (no active pending swap).
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment.
+    /// * `listing_id` - The ID of the listing to check.
+    ///
+    /// # Returns
+    /// Returns `true` if the listing has no active pending swap, `false` otherwise.
+    /// Never panics.
+    pub fn is_listing_available(env: Env, listing_id: u64) -> bool {
+        if let Some(swap_id) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u64>(&DataKey::ActiveListingSwap(listing_id))
+        {
+            if let Some(swap) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Swap>(&DataKey::Swap(swap_id))
+            {
+                swap.status != SwapStatus::Pending
+            } else {
+                true // If swap doesn't exist, consider available
+            }
+        } else {
+            true
+        }
     }
 }
 
@@ -987,6 +1026,66 @@ mod test {
             &zk_verifier,
             &registry_id,
         );
+    }
+
+    #[test]
+    fn test_is_listing_available() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let (registry_id, listing_id) = setup_registry(&env, &seller);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+            &registry_id,
+            &soroban_sdk::vec![&env, usdc_id],
+        );
+
+        // Initially available
+        assert!(client.is_listing_available(&listing_id));
+
+        // After initiating swap, not available
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+        assert!(!client.is_listing_available(&listing_id));
+
+        // After confirming, available again
+        client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"key"));
+        assert!(client.is_listing_available(&listing_id));
+
+        // Test with cancellation
+        let swap_id2 = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+        assert!(!client.is_listing_available(&listing_id));
+
+        // Simulate expiry and cancel
+        env.ledger().with_mut(|li| li.timestamp += 70);
+        client.cancel_swap(&swap_id2);
+        assert!(client.is_listing_available(&listing_id));
     }
 
     // ── helper ────────────────────────────────────────────────────────────────
