@@ -15,6 +15,8 @@ pub struct Listing {
     pub owner: Address,
     pub ipfs_hash: Bytes,
     pub merkle_root: Bytes,
+    pub royalty_bps: u32,
+    pub royalty_recipient: Address,
 }
 
 #[contracttype]
@@ -103,11 +105,13 @@ mod test {
         let hash = Bytes::from_slice(&env, b"QmTestHash");
         let root = Bytes::from_slice(&env, b"merkle_root_bytes");
 
-        let id = client.register_ip(&owner, &hash, &root);
+        let id = client.register_ip(&owner, &hash, &root, &0, &owner);
         assert_eq!(id, 1);
 
         let listing = client.get_listing(&id);
         assert_eq!(listing.owner, owner);
+        assert_eq!(listing.royalty_bps, 0);
+        assert_eq!(listing.royalty_recipient, owner);
     }
 
     #[test]
@@ -122,9 +126,9 @@ mod test {
         let hash = Bytes::from_slice(&env, b"QmHash");
         let root = Bytes::from_slice(&env, b"root");
 
-        let id1 = client.register_ip(&owner_a, &hash, &root);
-        let id2 = client.register_ip(&owner_b, &hash, &root);
-        let id3 = client.register_ip(&owner_a, &hash, &root);
+        let id1 = client.register_ip(&owner_a, &hash, &root, &0, &owner_a);
+        let id2 = client.register_ip(&owner_b, &hash, &root, &0, &owner_b);
+        let id3 = client.register_ip(&owner_a, &hash, &root, &0, &owner_a);
 
         let a_ids = client.list_by_owner(&owner_a);
         assert_eq!(a_ids.len(), 2);
@@ -151,6 +155,8 @@ mod test {
             &owner,
             &Bytes::from_slice(&env, b"QmHash"),
             &Bytes::from_slice(&env, b"root"),
+            &0,
+            &owner,
         );
 
         env.ledger().with_mut(|li| li.sequence_number += 5_000);
@@ -171,6 +177,8 @@ mod test {
             &owner,
             &Bytes::new(&env),
             &Bytes::from_slice(&env, b"merkle_root_bytes"),
+            &0,
+            &owner,
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
@@ -187,6 +195,8 @@ mod test {
             &owner,
             &Bytes::from_slice(&env, b"QmTestHash"),
             &Bytes::new(&env),
+            &0,
+            &owner,
         );
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
