@@ -39,6 +39,16 @@ pub enum DataKey {
     OwnerIndex(Address),
 }
 
+/// Emitted when an IP listing is deregistered.
+#[contractevent]
+pub struct IpDeregistered {
+    #[topic]
+    pub listing_id: u64,
+    #[topic]
+    pub owner: Address,
+}
+
+/// Emitted when a new IP listing is registered.
 #[contractevent]
 pub struct IpRegistered {
     #[topic]
@@ -182,6 +192,43 @@ impl IpRegistry {
 
     pub fn list_by_owner(env: Env, owner: Address) -> Vec<u64> {
         env.storage().persistent().get(&DataKey::OwnerIndex(owner)).unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Remove a listing from the registry. Only the owner may call this.
+    pub fn deregister_listing(
+        env: Env,
+        owner: Address,
+        listing_id: u64,
+    ) -> Result<(), ContractError> {
+        owner.require_auth();
+
+        let key = DataKey::Listing(listing_id);
+        let listing: Listing = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::ListingNotFound)?;
+
+        if listing.owner != owner {
+            return Err(ContractError::Unauthorized);
+        }
+
+        env.storage().persistent().remove(&key);
+
+        let idx_key = DataKey::OwnerIndex(owner.clone());
+        let mut ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&idx_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        if let Some(pos) = (0..ids.len()).find(|&i| ids.get(i).unwrap() == listing_id) {
+            ids.remove(pos);
+        }
+        env.storage().persistent().set(&idx_key, &ids);
+
+        IpDeregistered { listing_id, owner }.publish(&env);
+
+        Ok(())
     }
 }
 
@@ -416,5 +463,37 @@ mod test {
         entries.push_back((Bytes::new(&env), Bytes::from_slice(&env, b"root2")));
         assert!(client.try_batch_register_ip(&owner, &entries).is_err());
         assert_eq!(client.listing_count(), 0);
+    }
+
+    #[test]
+    fn test_deregister_listing_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 0);
+
+        client.deregister_listing(&owner, &id);
+
+        assert!(client.get_listing(&id).is_none());
+        assert_eq!(client.list_by_owner(&owner).len(), 0);
+    }
+
+    #[test]
+    fn test_deregister_listing_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 0);
+
+        let result = client.try_deregister_listing(&attacker, &id);
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+        assert!(client.get_listing(&id).is_some());
     }
 }
