@@ -1653,4 +1653,47 @@ mod test {
 
         assert!(client.is_listing_available(&listing_id));
     }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #4)")]
+    fn test_confirm_swap_blocked_when_paused() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
+            setup_full(&env, &buyer, &seller, 500, 0);
+
+        let swap_id = pending_swap(
+            &env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id, 500, &zk_id,
+        );
+
+        // pause after initiate so we can test confirm is blocked
+        client.pause();
+
+        let decryption_key = Bytes::from_slice(&env, b"secret");
+        client.confirm_swap(&swap_id, &decryption_key);
+    }
+
+    #[test]
+    fn test_unpause_restores_initiate_swap() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
+            setup_full(&env, &buyer, &seller, 500, 0);
+
+        client.pause();
+        client.unpause();
+
+        // should succeed after unpause — no panic expected
+        let swap_id = pending_swap(
+            &env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id, 500, &zk_id,
+        );
+        assert_eq!(
+            client.get_swap_status(&swap_id),
+            Some(SwapStatus::Pending)
+        );
+    }
 }
