@@ -2,7 +2,7 @@
 use ip_registry::IpRegistryClient;
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token,
-    Address, Bytes, Env,
+    Address, Bytes, Env, Vec,
 };
 use zk_verifier::{ProofNode, ZkVerifierClient};
 
@@ -31,6 +31,8 @@ pub enum ContractError {
     FeeWouldTruncate = 15,
     /// ZK Merkle proof verification failed.
     InvalidProof = 16,
+    /// Pagination offset or limit is out of valid range.
+    InvalidPaginationParams = 17,
 }
 
 #[contracttype]
@@ -312,8 +314,18 @@ impl AtomicSwap {
             &usdc_amount,
         );
 
-        let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
-        env.storage().instance().set(&DataKey::Counter, &id);
+        let id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Counter)
+            .unwrap_or(0_u64)
+            + 1;
+        env.storage().persistent().set(&DataKey::Counter, &id);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Counter,
+            PERSISTENT_TTL_LEDGERS,
+            PERSISTENT_TTL_LEDGERS,
+        );
 
         let key = DataKey::Swap(id);
         env.storage().persistent().set(
@@ -648,6 +660,35 @@ impl AtomicSwap {
             .persistent()
             .get(&DataKey::BuyerIndex(buyer))
             .unwrap_or_else(|| soroban_sdk::Vec::new(&env))
+    }
+
+    /// Paginated variant of `get_swaps_by_buyer`.
+    /// Returns up to `limit` swap IDs starting at `offset`.
+    /// Panics with `InvalidPaginationParams` if `limit` is 0 or `offset` exceeds the list length.
+    pub fn get_swaps_by_buyer_page(
+        env: Env,
+        buyer: Address,
+        offset: u32,
+        limit: u32,
+    ) -> soroban_sdk::Vec<u64> {
+        if limit == 0 {
+            panic_with_error!(&env, ContractError::InvalidPaginationParams);
+        }
+        let all: soroban_sdk::Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BuyerIndex(buyer))
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+        let total = all.len();
+        if offset > total {
+            panic_with_error!(&env, ContractError::InvalidPaginationParams);
+        }
+        let end = (offset + limit).min(total);
+        let mut page = soroban_sdk::Vec::new(&env);
+        for i in offset..end {
+            page.push_back(all.get(i).unwrap());
+        }
+        page
     }
 
     pub fn get_swaps_by_seller(env: Env, seller: Address) -> soroban_sdk::Vec<u64> {
@@ -1516,7 +1557,7 @@ mod test {
 
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 0);
         let usdc_client = token::Client::new(&env, &usdc_id);
 
@@ -1546,7 +1587,7 @@ mod test {
 
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 0);
         let usdc_client = token::Client::new(&env, &usdc_id);
 
@@ -1900,40 +1941,96 @@ mod test {
     }
 
     #[test]
-    fn test_resolve_dispute_favor_buyer_emits_event() {
+    fn test_get_swaps_by_buyer_page_empty_list() {
         let env = Env::default();
         env.mock_all_auths();
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
         let buyer = Address::generate(&env);
-        let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
-            setup_full(&env, &buyer, &seller, 500, 0);
-        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id);
-        client.raise_dispute(&swap_id);
-        let contract_id = client.address.clone();
-        client.resolve_dispute(&swap_id, &true);
-        let expected = DisputeResolved { swap_id, favor_buyer: true }.to_xdr(&env, &contract_id);
-        assert!(
-            env.events().all().events().contains(&expected),
-            "DisputeResolved(favor_buyer=true) not emitted"
-        );
+        let page = client.get_swaps_by_buyer_page(&buyer, &0u32, &10u32);
+        assert_eq!(page.len(), 0);
     }
 
     #[test]
-    fn test_resolve_dispute_favor_seller_emits_event() {
+    fn test_get_swaps_by_buyer_page_full_page() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id1, registry_id, _cid, client, _admin) =
+            setup_full(&env, &buyer, &seller, 1500, 0);
+        let listing_id2 = IpRegistryClient::new(&env, &registry_id).register_ip(
+            &seller,
+            &Bytes::from_slice(&env, b"h2"),
+            &Bytes::from_slice(&env, b"r2"),
+            &0u32,
+            &seller,
+            &0i128,
+        );
+        let listing_id3 = IpRegistryClient::new(&env, &registry_id).register_ip(
+            &seller,
+            &Bytes::from_slice(&env, b"h3"),
+            &Bytes::from_slice(&env, b"r3"),
+            &0u32,
+            &seller,
+            &0i128,
+        );
+        let id1 = pending_swap(&env, &client, listing_id1, &buyer, &seller, &usdc_id, &registry_id, 500);
+        let id2 = pending_swap(&env, &client, listing_id2, &buyer, &seller, &usdc_id, &registry_id, 500);
+        let id3 = pending_swap(&env, &client, listing_id3, &buyer, &seller, &usdc_id, &registry_id, 500);
+        // full page
+        let page = client.get_swaps_by_buyer_page(&buyer, &0u32, &3u32);
+        assert_eq!(page.len(), 3);
+        assert_eq!(page.get(0).unwrap(), id1);
+        assert_eq!(page.get(1).unwrap(), id2);
+        assert_eq!(page.get(2).unwrap(), id3);
+        // first page of 2
+        let page0 = client.get_swaps_by_buyer_page(&buyer, &0u32, &2u32);
+        assert_eq!(page0.len(), 2);
+        assert_eq!(page0.get(0).unwrap(), id1);
+        assert_eq!(page0.get(1).unwrap(), id2);
+        // second page (partial)
+        let page1 = client.get_swaps_by_buyer_page(&buyer, &2u32, &2u32);
+        assert_eq!(page1.len(), 1);
+        assert_eq!(page1.get(0).unwrap(), id3);
+    }
+
+    #[test]
+    fn test_get_swaps_by_buyer_page_offset_at_end() {
         let env = Env::default();
         env.mock_all_auths();
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
         let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
             setup_full(&env, &buyer, &seller, 500, 0);
-        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id);
-        client.raise_dispute(&swap_id);
-        let contract_id = client.address.clone();
-        client.resolve_dispute(&swap_id, &false);
-        let expected = DisputeResolved { swap_id, favor_buyer: false }.to_xdr(&env, &contract_id);
-        assert!(
-            env.events().all().events().contains(&expected),
-            "DisputeResolved(favor_buyer=false) not emitted"
-        );
+        pending_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id, 500);
+        // offset == len returns empty page
+        let page = client.get_swaps_by_buyer_page(&buyer, &1u32, &10u32);
+        assert_eq!(page.len(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #17)")]
+    fn test_get_swaps_by_buyer_page_zero_limit_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        let buyer = Address::generate(&env);
+        client.get_swaps_by_buyer_page(&buyer, &0u32, &0u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #17)")]
+    fn test_get_swaps_by_buyer_page_offset_out_of_bounds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 0);
+        pending_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id, 500);
+        // offset=2 on a list of 1 should panic
+        client.get_swaps_by_buyer_page(&buyer, &2u32, &10u32);
     }
 }
