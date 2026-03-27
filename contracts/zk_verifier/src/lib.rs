@@ -45,6 +45,13 @@ pub struct MerkleRootSet {
     pub merkle_root: BytesN<32>,
 }
 
+#[contractevent]
+pub struct ProofVerified {
+    #[topic]
+    pub listing_id: u64,
+    pub result: bool,
+}
+
 #[contract]
 pub struct ZkVerifier;
 
@@ -175,7 +182,7 @@ impl ZkVerifier {
 mod test {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
+        testutils::{Address as _, Events as _, Ledger as _},
         Bytes, Env, Vec,
     };
 
@@ -518,7 +525,7 @@ mod test {
         assert!(result);
 
         // At least one event should have been emitted (proof_verified)
-        assert!(!env.events().all().events().is_empty(), "proof_verified event not emitted");
+        assert!(!env.events().all().is_empty(), "proof_verified event not emitted");
     }
 
     #[test]
@@ -534,7 +541,7 @@ mod test {
         client.set_merkle_root(&owner, &1u64, &root);
 
         // At least one event should have been emitted (merkle_root_set)
-        assert!(!env.events().all().events().is_empty(), "merkle_root_set event not emitted");
+        assert!(!env.events().all().is_empty(), "merkle_root_set event not emitted");
     }
 
     #[test]
