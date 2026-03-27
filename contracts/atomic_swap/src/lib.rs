@@ -141,6 +141,14 @@ pub struct AdminTransferred {
     pub new_admin: Address,
 }
 
+/// Emitted when a dispute is resolved by the admin.
+#[contractevent]
+pub struct DisputeResolved {
+    #[topic]
+    pub swap_id: u64,
+    pub favor_buyer: bool,
+}
+
 #[contract]
 pub struct AtomicSwap;
 
@@ -563,6 +571,8 @@ impl AtomicSwap {
             }
             swap.status = SwapStatus::ResolvedSeller;
         }
+
+        DisputeResolved { swap_id, favor_buyer }.publish(&env);
 
         env.storage().persistent().set(&key, &swap);
         env.storage()
