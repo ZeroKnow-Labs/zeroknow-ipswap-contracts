@@ -554,11 +554,12 @@ impl AtomicSwap {
             .persistent()
             .get(&key)
             .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+        swap.buyer.require_auth();
         if swap.status != SwapStatus::Pending {
             env.panic_with_error(ContractError::SwapNotPending);
         }
-        swap.buyer.require_auth();
         if env.ledger().timestamp() < swap.expires_at {
+
             env.panic_with_error(ContractError::SwapNotCancellable);
         }
         token::Client::new(&env, &swap.usdc_token).transfer(
@@ -1262,18 +1263,17 @@ mod test {
     #[test]
     fn test_non_buyer_cancel_fails_auth() {
         let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
+        env.mock_all_auths();
 
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
+        let attacker = Address::generate(&env);
 
         let usdc_id = setup_usdc(&env, &buyer, 1000);
-        let (registry_id, listing_id) = setup_registry(&env, &seller);
+        let (registry_id, listing_id) = setup_registry(&env, &seller, 0);
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
-
-        env.mock_all_auths();
         let zk_id = env.register(ZkVerifier, ());
         client.initialize(
             &Address::generate(&env),
@@ -1288,8 +1288,21 @@ mod test {
 
         env.ledger().with_mut(|li| li.timestamp = li.timestamp.saturating_add(61));
 
+        // Only authorize the attacker, not the buyer
+        env.set_auths(&[]);
+        env.mock_auths(&[soroban_sdk::auth::MockAuth {
+            address: &attacker,
+            invoke: &soroban_sdk::auth::MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "cancel_swap",
+                args: (swap_id,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+
         let result = client.try_cancel_swap(&swap_id);
-        assert!(result.is_err(), "non-buyer cancel should fail");
+        assert!(result.is_err(), "non-buyer cancel should fail with auth error");
+        // USDC should not have been refunded
         assert_eq!(token::Client::new(&env, &usdc_id).balance(&buyer), 500);
     }
 
