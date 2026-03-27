@@ -11,6 +11,7 @@ pub enum ContractError {
 }
 
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
+const MAX_PROOF_DEPTH: u32 = 64;
 
 /// A single Merkle proof node: (sibling_hash, is_left)
 #[contracttype]
@@ -135,8 +136,26 @@ impl ZkVerifier {
             None => return false,
         };
 
+        if path.len() > MAX_PROOF_DEPTH {
+            ProofVerified {
+                listing_id,
+                result: false,
+            }
+            .publish(&env);
+            return false;
+        }
+
+        let zero_sibling = BytesN::from_array(&env, &[0u8; 32]);
         let mut current: BytesN<32> = env.crypto().sha256(&leaf).into();
         for node in path.iter() {
+            if node.sibling == zero_sibling {
+                ProofVerified {
+                    listing_id,
+                    result: false,
+                }
+                .publish(&env);
+                return false;
+            }
             let mut combined = Bytes::new(&env);
             if node.is_left {
                 combined.extend_from_array(&node.sibling.to_array());
@@ -306,6 +325,51 @@ mod test {
         let leaf = Bytes::from_slice(&env, b"leaf");
         let path: Vec<ProofNode> = Vec::new(&env);
         assert!(!client.verify_partial_proof(&99u64, &leaf, &path));
+    }
+
+    #[test]
+    fn test_verify_partial_proof_rejects_zero_sibling_node() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let leaf = Bytes::from_slice(&env, b"leaf");
+        let root: BytesN<32> = env.crypto().sha256(&leaf).into();
+        client.set_merkle_root(&owner, &7u64, &root);
+
+        let mut path: Vec<ProofNode> = Vec::new(&env);
+        path.push_back(ProofNode {
+            sibling: BytesN::from_array(&env, &[0u8; 32]),
+            is_left: false,
+        });
+        assert!(!client.verify_partial_proof(&7u64, &leaf, &path));
+    }
+
+    #[test]
+    fn test_verify_partial_proof_rejects_oversized_path() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let leaf = Bytes::from_slice(&env, b"leaf");
+        let root: BytesN<32> = env.crypto().sha256(&leaf).into();
+        client.set_merkle_root(&owner, &8u64, &root);
+
+        let non_zero_hash: BytesN<32> =
+            BytesN::from_array(&env, &[1u8; 32]);
+        let mut path: Vec<ProofNode> = Vec::new(&env);
+        for _ in 0..(MAX_PROOF_DEPTH + 1) {
+            path.push_back(ProofNode {
+                sibling: non_zero_hash.clone(),
+                is_left: false,
+            });
+        }
+
+        assert!(!client.verify_partial_proof(&8u64, &leaf, &path));
     }
 
     #[test]
