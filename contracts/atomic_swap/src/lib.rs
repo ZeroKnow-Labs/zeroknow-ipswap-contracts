@@ -753,6 +753,29 @@ mod test {
     // ── price enforcement tests ───────────────────────────────────────────────
 
     #[test]
+    #[should_panic(expected = "Error(Contract, #3)")]
+    fn test_initiate_swap_rejects_zero_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+            setup_full(&env, &buyer, &seller, 1000, 0);
+
+        client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &0,
+            &zk_verifier,
+            &registry_id,
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "Error(Contract, #14)")]
     fn test_initiate_swap_rejects_underpayment() {
         let env = Env::default();
