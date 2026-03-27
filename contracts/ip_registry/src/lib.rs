@@ -20,11 +20,24 @@ pub enum ContractError {
     InvalidPrice = 8,
 }
 
+
+
+
+
+
 /// Minimal interface to check for a pending swap on a listing.
 #[contractclient(name = "AtomicSwapClient")]
 pub trait AtomicSwapInterface {
     fn has_pending_swap(env: Env, listing_id: u64) -> bool;
 }
+
+
+
+
+
+
+
+
 
 #[contracttype]
 #[derive(Clone)]
@@ -33,6 +46,15 @@ pub struct Config {
     pub ttl_threshold: u32,
     pub ttl_extend_to: u32,
 }
+
+
+
+
+
+
+
+
+
 
 #[contracttype]
 #[derive(Clone)]

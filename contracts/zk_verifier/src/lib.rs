@@ -20,6 +20,16 @@ pub struct ProofNode {
     pub is_left: bool,
 }
 
+
+
+
+
+
+
+
+
+
+
 #[contracttype]
 pub enum DataKey {
     MerkleRoot(u64),

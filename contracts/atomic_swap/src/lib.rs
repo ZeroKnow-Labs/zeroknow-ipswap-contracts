@@ -9,6 +9,10 @@ use zk_verifier::{ProofNode, ZkVerifierClient};
 const PERSISTENT_TTL_LEDGERS: u32 = 6_312_000;
 const DEFAULT_DISPUTE_WINDOW_LEDGERS: u32 = 17_280;
 
+
+
+//Added enum
+
 #[contracterror]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContractError {
