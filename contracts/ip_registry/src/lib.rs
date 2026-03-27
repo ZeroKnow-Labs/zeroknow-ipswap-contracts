@@ -275,18 +275,39 @@ impl IpRegistry {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Get a paginated list of listing IDs for an owner.
+    /// Returns listing IDs starting at `offset` with a maximum of `limit` results.
+    pub fn list_by_owner_page(env: Env, owner: Address, offset: u32, limit: u32) -> Vec<u64> {
+        let all_listings = env.storage()
+            .persistent()
+            .get(&DataKey::OwnerIndex(owner))
+            .unwrap_or_else(|| Vec::new(&env));
+        
+        let offset_usize = offset as usize;
+        let limit_usize = limit as usize;
+        
+        if offset_usize >= all_listings.len() {
+            return Vec::new(&env);
+        }
+        
+        let end = std::cmp::min(offset_usize + limit_usize, all_listings.len());
+        all_listings.slice(offset_usize..end)
+    }
+
     /// Update ipfs_hash and/or merkle_root of an existing listing.
     /// Requires owner auth. Rejects if a pending swap exists for the listing.
     pub fn update_listing(
         env: Env,
+        owner: Address,
         listing_id: u64,
         new_ipfs_hash: Bytes,
         new_merkle_root: Bytes,
-        atomic_swap: Option<Address>,
     ) {
         if new_ipfs_hash.is_empty() || new_merkle_root.is_empty() {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
+        owner.require_auth();
+        
         let key = DataKey::Listing(listing_id);
         let mut listing: Listing = env
             .storage()
@@ -294,12 +315,8 @@ impl IpRegistry {
             .get(&key)
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::ListingNotFound));
 
-        listing.owner.require_auth();
-
-        if let Some(swap_addr) = atomic_swap {
-            if AtomicSwapClient::new(&env, &swap_addr).has_pending_swap(&listing_id) {
-                panic_with_error!(&env, ContractError::PendingSwapExists);
-            }
+        if listing.owner != owner {
+            panic_with_error!(&env, ContractError::Unauthorized);
         }
 
         listing.ipfs_hash = new_ipfs_hash;
