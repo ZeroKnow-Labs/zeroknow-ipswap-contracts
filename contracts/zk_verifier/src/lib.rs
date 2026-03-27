@@ -56,6 +56,11 @@ impl ZkVerifier {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.events().publish(MerkleRootSet {
+            listing_id,
+            owner,
+            merkle_root: root,
+        });
     }
 
     /// Retrieves the stored Merkle root for a given listing, or None if not set.
@@ -126,7 +131,7 @@ impl ZkVerifier {
 mod test {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
+        testutils::{Address as _, Events as _, Ledger as _},
         Bytes, Env, Vec,
     };
 
@@ -213,6 +218,7 @@ mod test {
     }
 
     #[test]
+    #[should_panic(expected = "Error(Contract, #1)")]
     fn test_unauthorized_overwrite_rejected() {
         let env = Env::default();
         env.mock_all_auths();
