@@ -1,6 +1,6 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractclient, contractevent, contractimpl, contracttype,
+    contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
     panic_with_error, Address, Bytes, Env, Vec,
 };
 
@@ -15,6 +15,8 @@ pub enum ContractError {
     ListingNotFound = 3,
     PendingSwapExists = 4,
     Unauthorized = 5,
+    NotInitialized = 6,
+    AlreadyInitialized = 7,
 }
 
 /// Minimal interface to check for a pending swap on a listing.
@@ -159,7 +161,8 @@ impl IpRegistry {
         royalty_recipient: Address,
         price_usdc: i128,
     ) -> Result<u64, ContractError> {
-        if ipfs_hash.is_empty() || merkle_root.is_empty() || price_usdc < 0 || royalty_bps > 10_000 {
+        if ipfs_hash.is_empty() || merkle_root.is_empty() || price_usdc < 0 || royalty_bps > 10_000
+        {
             return Err(ContractError::InvalidInput);
         }
         owner.require_auth();
@@ -327,20 +330,18 @@ impl IpRegistry {
     /// Get a paginated list of listing IDs for an owner.
     /// Returns listing IDs starting at `offset` with a maximum of `limit` results.
     pub fn list_by_owner_page(env: Env, owner: Address, offset: u32, limit: u32) -> Vec<u64> {
-        let all_listings = env.storage()
+        let all_listings = env
+            .storage()
             .persistent()
             .get(&DataKey::OwnerIndex(owner))
             .unwrap_or_else(|| Vec::new(&env));
-        
-        let offset_usize = offset as usize;
-        let limit_usize = limit as usize;
-        
-        if offset_usize >= all_listings.len() {
+
+        if offset >= all_listings.len() {
             return Vec::new(&env);
         }
-        
-        let end = std::cmp::min(offset_usize + limit_usize, all_listings.len());
-        all_listings.slice(offset_usize..end)
+
+        let end = core::cmp::min(offset.saturating_add(limit), all_listings.len());
+        all_listings.slice(offset..end)
     }
 
     /// Update ipfs_hash and/or merkle_root of an existing listing.
@@ -356,7 +357,7 @@ impl IpRegistry {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
         owner.require_auth();
-        
+
         let key = DataKey::Listing(listing_id);
         let mut listing: Listing = env
             .storage()
@@ -368,15 +369,14 @@ impl IpRegistry {
             panic_with_error!(&env, ContractError::Unauthorized);
         }
 
+        let cfg = get_config(&env);
         listing.ipfs_hash = new_ipfs_hash;
         listing.merkle_root = new_merkle_root;
         env.storage().persistent().set(&key, &listing);
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        extend_persistent(&env, &key, &cfg);
         env.storage()
             .instance()
-            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+            .extend_ttl(cfg.ttl_threshold, cfg.ttl_extend_to);
     }
 
     /// Remove a listing from the registry. Only the owner may call this.
@@ -386,7 +386,6 @@ impl IpRegistry {
         listing_id: u64,
     ) -> Result<(), ContractError> {
         owner.require_auth();
-
 
         let key = DataKey::Listing(listing_id);
         let listing: Listing = env
@@ -765,6 +764,8 @@ mod test {
         let contract_id = env.register(IpRegistry, ());
         let client = IpRegistryClient::new(&env, &contract_id);
         let owner = Address::generate(&env);
+        let admin = Address::generate(&env);
+        client.initialize(&admin, &THRESHOLD, &EXTEND_TO);
         let id = client.register_ip(
             &owner,
             &Bytes::from_slice(&env, b"QmHash"),
