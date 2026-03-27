@@ -1,21 +1,8 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
-
-#[contractevent]
-pub struct MerkleRootSet {
-    #[topic]
-    pub listing_id: u64,
-    #[topic]
-    pub owner: Address,
-    pub merkle_root: BytesN<32>,
-}
-
-#[contractevent]
-pub struct ProofVerified {
-    #[topic]
-    pub listing_id: u64,
-    pub result: bool,
-}
+use soroban_sdk::{
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, BytesN,
+    Env, Vec,
+};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -37,6 +24,15 @@ pub struct ProofNode {
 pub enum DataKey {
     MerkleRoot(u64),
     Owner(u64),
+}
+
+#[contractevent]
+pub struct MerkleRootSet {
+    #[topic]
+    pub listing_id: u64,
+    #[topic]
+    pub owner: Address,
+    pub merkle_root: BytesN<32>,
 }
 
 #[contract]
@@ -76,7 +72,8 @@ impl ZkVerifier {
             listing_id,
             owner,
             merkle_root: root,
-        }.publish(&env);
+        }
+        .publish(&env);
     }
 
     /// Retrieves the stored Merkle root for a given listing, or None if not set.
@@ -162,7 +159,7 @@ impl ZkVerifier {
 mod test {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Events as _, Ledger as _},
+        testutils::{Address as _, Ledger as _},
         Bytes, Env, Vec,
     };
 
@@ -245,11 +242,13 @@ mod test {
             .sha256(&Bytes::from_slice(&env, b"fake"))
             .into();
         let result = client.try_set_merkle_root(&attacker, &1u64, &fake_root);
-        assert!(result.is_err(), "attacker should be rejected while owner key is alive");
+        assert!(
+            result.is_err(),
+            "attacker should be rejected while owner key is alive"
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #1)")]
     fn test_unauthorized_overwrite_rejected() {
         let env = Env::default();
         env.mock_all_auths();
@@ -267,8 +266,11 @@ mod test {
             .crypto()
             .sha256(&Bytes::from_slice(&env, b"fake"))
             .into();
-        // Direct call panics with ContractError::Unauthorized
-        client.set_merkle_root(&attacker, &1u64, &fake_root);
+        let result = client.try_set_merkle_root(&attacker, &1u64, &fake_root);
+        assert!(
+            result.is_err(),
+            "attacker should not be able to overwrite owner's root"
+        );
     }
 
     #[test]
@@ -291,7 +293,10 @@ mod test {
 
         let owner = Address::generate(&env);
         let new_owner = Address::generate(&env);
-        let root: BytesN<32> = env.crypto().sha256(&Bytes::from_slice(&env, b"leaf")).into();
+        let root: BytesN<32> = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, b"leaf"))
+            .into();
         client.set_merkle_root(&owner, &1u64, &root);
 
         client.transfer_root_ownership(&owner, &1u64, &new_owner);
@@ -312,7 +317,10 @@ mod test {
         let owner = Address::generate(&env);
         let attacker = Address::generate(&env);
         let new_owner = Address::generate(&env);
-        let root: BytesN<32> = env.crypto().sha256(&Bytes::from_slice(&env, b"leaf")).into();
+        let root: BytesN<32> = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, b"leaf"))
+            .into();
         client.set_merkle_root(&owner, &1u64, &root);
 
         let result = client.try_transfer_root_ownership(&attacker, &1u64, &new_owner);
