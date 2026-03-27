@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, BytesN,
-    Env, Vec,
+    contract, contractclient, contracterror, contractevent, contractimpl, contracttype, Address,
+    Bytes, BytesN, Env, Vec,
 };
 
 #[contracterror]
@@ -52,10 +52,23 @@ pub struct ProofVerified {
     pub result: bool,
 }
 
-#[contract]
+/// Client interface for ZkVerifier — always compiled so dependents can use ZkVerifierClient.
+#[cfg(not(feature = "contract"))]
+#[contractclient(name = "ZkVerifierClient")]
+pub trait ZkVerifierInterface {
+    fn set_merkle_root(
+        env: Env,
+        owner: Address,
+        listing_id: u64,
+        root: BytesN<32>,
+    ) -> Result<(), ContractError>;
+    fn verify_partial_proof(env: Env, listing_id: u64, leaf: Bytes, path: Vec<ProofNode>) -> bool;
+}
+
+#[cfg_attr(feature = "contract", contract)]
 pub struct ZkVerifier;
 
-#[contractimpl]
+#[cfg_attr(feature = "contract", contractimpl)]
 impl ZkVerifier {
     /// Store the Merkle root for a listing. Only the listing owner can set or overwrite it.
     pub fn set_merkle_root(
@@ -525,7 +538,7 @@ mod test {
         assert!(result);
 
         // At least one event should have been emitted (proof_verified)
-        assert!(!env.events().all().is_empty(), "proof_verified event not emitted");
+        assert!(!env.events().all().events().is_empty(), "proof_verified event not emitted");
     }
 
     #[test]
@@ -541,7 +554,7 @@ mod test {
         client.set_merkle_root(&owner, &1u64, &root);
 
         // At least one event should have been emitted (merkle_root_set)
-        assert!(!env.events().all().is_empty(), "merkle_root_set event not emitted");
+        assert!(!env.events().all().events().is_empty(), "merkle_root_set event not emitted");
     }
 
     #[test]
