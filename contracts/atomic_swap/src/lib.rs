@@ -589,7 +589,7 @@ mod test {
     use ip_registry::{IpRegistry, IpRegistryClient};
     use soroban_sdk::{
         testutils::{Address as _, Ledger as _},
-        token, Bytes, Env,
+        token, Bytes, Env, IntoVal,
     };
 
     fn setup_registry(env: &Env, seller: &Address, price_usdc: i128) -> (Address, u64) {
@@ -1157,6 +1157,39 @@ mod test {
             Some(SwapStatus::Cancelled)
         );
         assert_eq!(usdc_client.balance(&buyer), 1000);
+    }
+
+    #[test]
+    fn test_initiate_swap_emits_swap_initiated_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+            setup_full(&env, &buyer, &seller, 1000, 1000);
+
+        let swap_id = pending_swap(
+            &env,
+            &client,
+            listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &registry_id,
+            1000,
+        );
+
+        // SwapInitiated topics: [swap_id, listing_id]; data: (buyer, seller, usdc_amount)
+        let events = env.events().all();
+        let swap_id_val: soroban_sdk::Val = swap_id.into_val(&env);
+        let listing_id_val: soroban_sdk::Val = listing_id.into_val(&env);
+        let matched = events.iter().any(|(_, topics, _)| {
+            topics.len() == 2
+                && topics.get_unchecked(0) == swap_id_val
+                && topics.get_unchecked(1) == listing_id_val
+        });
+        assert!(matched, "SwapInitiated event not emitted");
     }
 
     fn confirmed_swap(
