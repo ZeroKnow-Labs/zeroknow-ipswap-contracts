@@ -685,7 +685,9 @@ impl AtomicSwap {
 
     /// Paginated variant of `get_swaps_by_buyer`.
     /// Returns up to `limit` swap IDs starting at `offset`.
-    /// Panics with `InvalidPaginationParams` if `limit` is 0 or `offset` exceeds the list length.
+    /// Returns an empty Vec when `offset == total` (valid cursor-past-end state).
+    /// Panics with `InvalidPaginationParams` if `limit` is 0 or `offset` is strictly
+    /// greater than the list length.
     pub fn get_swaps_by_buyer_page(
         env: Env,
         buyer: Address,
@@ -701,6 +703,8 @@ impl AtomicSwap {
             .get(&DataKey::BuyerIndex(buyer))
             .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
         let total = all.len();
+        // offset == total is a valid cursor-past-end: return empty without panicking.
+        // Only panic when offset is strictly beyond the list.
         if offset > total {
             panic_with_error!(&env, ContractError::InvalidPaginationParams);
         }
@@ -2119,6 +2123,8 @@ mod test {
 
     #[test]
     fn test_get_swaps_by_buyer_page_offset_at_end() {
+        // offset == total is a valid cursor-past-end state: must return an empty Vec,
+        // not panic with InvalidPaginationParams.
         let env = Env::default();
         env.mock_all_auths();
         let buyer = Address::generate(&env);
@@ -2135,7 +2141,7 @@ mod test {
             &registry_id,
             500,
         );
-        // offset == len returns empty page
+        // 1 swap in the list; offset=1 == total=1 → empty page, no panic
         let page = client.get_swaps_by_buyer_page(&buyer, &1u32, &10u32);
         assert_eq!(page.len(), 0);
     }
