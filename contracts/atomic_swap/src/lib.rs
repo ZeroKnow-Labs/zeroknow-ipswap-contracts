@@ -139,6 +139,14 @@ pub struct AdminTransferred {
     pub new_admin: Address,
 }
 
+/// Emitted when a dispute is resolved by the admin.
+#[contractevent]
+pub struct DisputeResolved {
+    #[topic]
+    pub swap_id: u64,
+    pub favor_buyer: bool,
+}
+
 #[contract]
 pub struct AtomicSwap;
 
@@ -551,6 +559,8 @@ impl AtomicSwap {
             }
             swap.status = SwapStatus::ResolvedSeller;
         }
+
+        DisputeResolved { swap_id, favor_buyer }.publish(&env);
 
         env.storage().persistent().set(&key, &swap);
         env.storage()
@@ -1887,5 +1897,43 @@ mod test {
         client.cancel_swap(&swap_id);
 
         assert!(client.is_listing_available(&listing_id));
+    }
+
+    #[test]
+    fn test_resolve_dispute_favor_buyer_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 0);
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id);
+        client.raise_dispute(&swap_id);
+        let contract_id = client.address.clone();
+        client.resolve_dispute(&swap_id, &true);
+        let expected = DisputeResolved { swap_id, favor_buyer: true }.to_xdr(&env, &contract_id);
+        assert!(
+            env.events().all().events().contains(&expected),
+            "DisputeResolved(favor_buyer=true) not emitted"
+        );
+    }
+
+    #[test]
+    fn test_resolve_dispute_favor_seller_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+            setup_full(&env, &buyer, &seller, 500, 0);
+        let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id);
+        client.raise_dispute(&swap_id);
+        let contract_id = client.address.clone();
+        client.resolve_dispute(&swap_id, &false);
+        let expected = DisputeResolved { swap_id, favor_buyer: false }.to_xdr(&env, &contract_id);
+        assert!(
+            env.events().all().events().contains(&expected),
+            "DisputeResolved(favor_buyer=false) not emitted"
+        );
     }
 }
