@@ -33,6 +33,8 @@ pub enum ContractError {
     InvalidProof = 16,
     /// Pagination offset or limit is out of valid range.
     InvalidPaginationParams = 17,
+    /// Cancel delay has not yet elapsed since swap creation.
+    CancelTooEarly = 18,
 }
 
 #[contracttype]
@@ -594,9 +596,19 @@ impl AtomicSwap {
             env.panic_with_error(ContractError::SwapNotPending);
         }
         swap.buyer.require_auth();
-        if env.ledger().timestamp() < swap.expires_at {
-            env.panic_with_error(ContractError::SwapNotCancellable);
+
+        // Read cancel_delay_secs from Config and enforce the delay
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        
+        let cancel_deadline = swap.created_at.saturating_add(config.cancel_delay_secs);
+        if env.ledger().timestamp() < cancel_deadline {
+            env.panic_with_error(ContractError::CancelTooEarly);
         }
+
         token::Client::new(&env, &swap.usdc_token).transfer(
             &env.current_contract_address(),
             &swap.buyer,
@@ -1361,7 +1373,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #10)")]
+    #[should_panic(expected = "Error(Contract, #18)")]
     fn test_cancel_swap_rejects_before_expiry() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1557,7 +1569,7 @@ mod test {
 
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
             setup_full(&env, &buyer, &seller, 500, 0);
         let usdc_client = token::Client::new(&env, &usdc_id);
 
@@ -1587,7 +1599,7 @@ mod test {
 
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
             setup_full(&env, &buyer, &seller, 500, 0);
         let usdc_client = token::Client::new(&env, &usdc_id);
 
