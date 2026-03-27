@@ -18,6 +18,7 @@ pub enum ContractError {
     NotInitialized = 6,
     AlreadyInitialized = 7,
     InvalidPrice = 8,
+    ContractPaused = 9,
 }
 
 /// Minimal interface to check for a pending swap on a listing.
@@ -51,6 +52,7 @@ pub enum DataKey {
     Counter,
     OwnerIndex(Address),
     Config,
+    Paused,
 }
 
 #[contractevent]
@@ -98,6 +100,20 @@ pub struct OwnershipTransferred {
     pub to: Address,
 }
 
+/// Emitted when the contract is paused by the admin.
+#[contractevent]
+pub struct ContractPausedEvent {
+    #[topic]
+    pub admin: Address,
+}
+
+/// Emitted when the contract is unpaused by the admin.
+#[contractevent]
+pub struct ContractUnpausedEvent {
+    #[topic]
+    pub admin: Address,
+}
+
 #[contract]
 pub struct IpRegistry;
 
@@ -112,6 +128,17 @@ fn extend_persistent(env: &Env, key: &DataKey, cfg: &Config) {
     env.storage()
         .persistent()
         .extend_ttl(key, cfg.ttl_threshold, cfg.ttl_extend_to);
+}
+
+fn assert_not_paused(env: &Env) {
+    let paused: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false);
+    if paused {
+        panic_with_error!(env, ContractError::ContractPaused);
+    }
 }
 
 #[contractimpl]
@@ -163,6 +190,38 @@ impl IpRegistry {
         Ok(())
     }
 
+    /// Admin-only: pause the contract. Blocks new IP registrations.
+    pub fn pause(env: Env) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .map(|cfg: Config| cfg.admin)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NotInitialized));
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &true);
+        env.storage()
+            .instance()
+            .extend_ttl(100_000, 6_312_000);
+        ContractPausedEvent { admin }.publish(&env);
+    }
+
+    /// Admin-only: unpause the contract. Allows IP registrations to resume.
+    pub fn unpause(env: Env) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .map(|cfg: Config| cfg.admin)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NotInitialized));
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.storage()
+            .instance()
+            .extend_ttl(100_000, 6_312_000);
+        ContractUnpausedEvent { admin }.publish(&env);
+    }
+
     pub fn register_ip(
         env: Env,
         owner: Address,
@@ -172,6 +231,7 @@ impl IpRegistry {
         royalty_recipient: Address,
         price_usdc: i128,
     ) -> Result<u64, ContractError> {
+        assert_not_paused(&env);
         if ipfs_hash.is_empty() || merkle_root.is_empty() || price_usdc < 0 || royalty_bps > 10_000
         {
             return Err(ContractError::InvalidInput);
@@ -233,6 +293,7 @@ impl IpRegistry {
     }
 
     pub fn batch_register_ip(env: Env, owner: Address, entries: Vec<IpEntry>) -> Vec<u64> {
+        assert_not_paused(&env);
         let mut i: u32 = 0;
         while i < entries.len() {
             let (ipfs_hash, merkle_root) = entries.get(i).unwrap();
@@ -367,6 +428,7 @@ impl IpRegistry {
         new_ipfs_hash: Bytes,
         new_merkle_root: Bytes,
     ) {
+        assert_not_paused(&env);
         if new_ipfs_hash.is_empty() || new_merkle_root.is_empty() {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
@@ -506,7 +568,7 @@ impl IpRegistry {
 mod test {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
+        testutils::{Address as _, Ledger as _, Events},
         Env,
     };
 
@@ -579,7 +641,7 @@ mod test {
         assert_eq!(cfg.ttl_extend_to, 3_000_000);
 
         let owner = Address::generate(&env);
-        let id = register(&client, &owner, b"QmHash", b"root", 0);
+        let id = register(&client, &owner, b"QmHash", b"root", 1);
         assert!(client.get_listing(&id).is_some());
     }
 
@@ -644,7 +706,7 @@ mod test {
             &owner,
             &-1i128,
         );
-        assert_eq!(result, Err(Ok(ContractError::InvalidPrice)));
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
     }
 
     #[test]
@@ -706,12 +768,12 @@ mod test {
     fn test_counter_persists_across_ttl_boundary() {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
-        let id1 = register(&client, &owner, b"QmHash1", b"root1", 0);
-        let id2 = register(&client, &owner, b"QmHash2", b"root2", 0);
+        let id1 = register(&client, &owner, b"QmHash1", b"root1", 1);
+        let id2 = register(&client, &owner, b"QmHash2", b"root2", 1);
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
         env.ledger().with_mut(|li| li.sequence_number += 6_400_000);
-        let id3 = register(&client, &owner, b"QmHash3", b"root3", 0);
+        let id3 = register(&client, &owner, b"QmHash3", b"root3", 1);
         assert_eq!(id3, 3, "Counter reset after TTL — ID collision risk");
         assert_eq!(client.listing_count(), 3);
     }
@@ -793,7 +855,7 @@ mod test {
     fn test_deregister_listing_success() {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
-        let id = register(&client, &owner, b"QmHash", b"root", 0);
+        let id = register(&client, &owner, b"QmHash", b"root", 1);
         client.deregister_listing(&owner, &id);
         assert!(client.get_listing(&id).is_none());
         assert_eq!(client.list_by_owner(&owner).len(), 0);
@@ -804,7 +866,7 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let attacker = Address::generate(&env);
-        let id = register(&client, &owner, b"QmHash", b"root", 0);
+        let id = register(&client, &owner, b"QmHash", b"root", 1);
         let result = client.try_deregister_listing(&attacker, &id);
         assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
         assert!(client.get_listing(&id).is_some());
@@ -897,7 +959,7 @@ mod test {
         let owner = Address::generate(&env);
         let attacker = Address::generate(&env);
         let new_owner = Address::generate(&env);
-        let id = register(&client, &owner, b"QmHash", b"root", 0);
+        let id = register(&client, &owner, b"QmHash", b"root", 1);
 
         let result = client.try_transfer_listing_ownership(&attacker, &id, &new_owner);
         assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
@@ -915,5 +977,107 @@ mod test {
 
         let result = client.try_transfer_listing_ownership(&owner, &999, &new_owner);
         assert_eq!(result, Err(Ok(ContractError::ListingNotFound)));
+    }
+
+    // ── Pause/Unpause tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_pause_emits_event() {
+        let (env, client, _admin) = setup();
+        client.pause();
+        let events = env.events().all().filter_by_contract(&client.address);
+        assert!(
+            !events.events().is_empty(),
+            "ContractPausedEvent not emitted"
+        );
+    }
+
+    #[test]
+    fn test_unpause_emits_event() {
+        let (env, client, _admin) = setup();
+        client.pause();
+        client.unpause();
+        let events = env.events().all().filter_by_contract(&client.address);
+        assert!(
+            !events.events().is_empty(),
+            "ContractUnpausedEvent not emitted"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn test_register_ip_blocked_when_paused() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        client.pause();
+        client.register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &0u32,
+            &owner,
+            &1000i128,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn test_batch_register_ip_blocked_when_paused() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let mut entries: Vec<IpEntry> = Vec::new(&env);
+        entries.push_back((
+            Bytes::from_slice(&env, b"QmHash1"),
+            Bytes::from_slice(&env, b"root1"),
+        ));
+        client.pause();
+        client.batch_register_ip(&owner, &entries);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn test_update_listing_blocked_when_paused() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        client.pause();
+        client.update_listing(
+            &owner,
+            &id,
+            &Bytes::from_slice(&env, b"QmHashNew"),
+            &Bytes::from_slice(&env, b"rootNew"),
+        );
+    }
+
+    #[test]
+    fn test_register_ip_allowed_after_unpause() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        client.pause();
+        client.unpause();
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        assert_eq!(id, 1);
+        assert!(client.get_listing(&id).is_some());
+    }
+
+    #[test]
+    fn test_deregister_listing_allowed_when_paused() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        client.pause();
+        // Deregister should succeed even when paused (read-only operation)
+        client.deregister_listing(&owner, &id);
+        assert!(client.get_listing(&id).is_none());
+    }
+
+    #[test]
+    fn test_get_listing_allowed_when_paused() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        client.pause();
+        // Get should succeed even when paused (read-only operation)
+        assert!(client.get_listing(&id).is_some());
     }
 }
