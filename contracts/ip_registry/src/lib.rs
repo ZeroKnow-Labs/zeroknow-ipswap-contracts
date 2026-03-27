@@ -427,8 +427,8 @@ impl IpRegistry {
 mod test {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Events as _, Ledger as _},
-        token, Env, Event,
+        testutils::{Address as _, Ledger as _},
+        Env,
     };
 
     const THRESHOLD: u32 = 100_000;

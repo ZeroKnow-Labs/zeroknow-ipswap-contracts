@@ -28,6 +28,8 @@ pub enum ContractError {
     UnderpaymentNotAllowed = 14,
     /// Configured fee_bps would compute to zero for this usdc_amount.
     FeeWouldTruncate = 15,
+    /// Caller-supplied zk_verifier does not match the trusted address stored in Config.
+    InvalidVerifier = 16,
 }
 
 #[contracttype]
@@ -241,6 +243,12 @@ impl AtomicSwap {
             .instance()
             .get(&DataKey::Config)
             .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+
+        // Reject any zk_verifier that isn't the trusted one stored in Config.
+        if zk_verifier != config.zk_verifier {
+            env.panic_with_error(ContractError::InvalidVerifier);
+        }
+
         Self::calculate_fee_amount(&env, usdc_amount, config.fee_bps);
 
         let now = env.ledger().timestamp();
@@ -682,8 +690,9 @@ mod test {
         let client = AtomicSwapClient::new(env, &contract_id);
         let admin = Address::generate(env);
         let fee_recipient = Address::generate(env);
-        client.initialize(&admin, &0u32, &fee_recipient, &60u64);
-        (usdc_id, listing_id, registry_id, contract_id, client, admin)
+        let zk_id = env.register(ZkVerifier, ());
+        client.initialize(&admin, &0u32, &fee_recipient, &60u64, &zk_id);
+        (usdc_id, listing_id, registry_id, contract_id, client, admin, zk_id)
     }
 
     fn pending_swap(
@@ -695,6 +704,7 @@ mod test {
         usdc_id: &Address,
         registry_id: &Address,
         usdc_amount: i128,
+        zk_id: &Address,
     ) -> u64 {
         client.initiate_swap(&listing_id, buyer, seller, usdc_id, &usdc_amount, registry_id)
     }
@@ -871,7 +881,7 @@ mod test {
         env.mock_all_auths();
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, contract_id, client, _admin) =
+        let (usdc_id, listing_id, registry_id, contract_id, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 500);
         let usdc_client = token::Client::new(&env, &usdc_id);
 
@@ -899,7 +909,7 @@ mod test {
         env.mock_all_auths();
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, contract_id, client, _admin) =
+        let (usdc_id, listing_id, registry_id, contract_id, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 500);
         let usdc_client = token::Client::new(&env, &usdc_id);
 
@@ -942,7 +952,7 @@ mod test {
         env.mock_all_auths();
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, contract_id, client, _admin) =
+        let (usdc_id, listing_id, registry_id, contract_id, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 500);
         let usdc_client = token::Client::new(&env, &usdc_id);
 
@@ -1042,7 +1052,8 @@ mod test {
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
-        client.initialize(&Address::generate(&env), &250u32, &fee_recipient, &60u64);
+        let zk_id = env.register(ZkVerifier, ());
+        client.initialize(&Address::generate(&env), &250u32, &fee_recipient, &60u64, &zk_id);
 
         let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &10_000, &registry_id);
         client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"key"));
@@ -1067,7 +1078,8 @@ mod test {
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
-        client.initialize(&Address::generate(&env), &0u32, &fee_recipient, &60u64);
+        let zk_id = env.register(ZkVerifier, ());
+        client.initialize(&Address::generate(&env), &0u32, &fee_recipient, &60u64, &zk_id);
 
         let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &1000, &registry_id);
         client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"key"));
@@ -1092,7 +1104,8 @@ mod test {
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
-        client.initialize(&Address::generate(&env), &250u32, &fee_recipient, &60u64);
+        let zk_id = env.register(ZkVerifier, ());
+        client.initialize(&Address::generate(&env), &250u32, &fee_recipient, &60u64, &zk_id);
 
         client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &1, &registry_id);
     }
@@ -1110,7 +1123,8 @@ mod test {
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
-        client.initialize(&Address::generate(&env), &250u32, &fee_recipient, &60u64);
+        let zk_id = env.register(ZkVerifier, ());
+        client.initialize(&Address::generate(&env), &250u32, &fee_recipient, &60u64, &zk_id);
 
         let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &40, &registry_id);
         client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"key"));
@@ -1272,7 +1286,7 @@ mod test {
         env.mock_all_auths();
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 0);
 
         let swap_id = confirmed_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id);
@@ -1287,7 +1301,7 @@ mod test {
         env.mock_all_auths();
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 0);
 
         client.set_dispute_window(&10u32);
@@ -1302,7 +1316,7 @@ mod test {
         env.mock_all_auths();
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 0);
 
         let swap_id = pending_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id, 500);
@@ -1316,7 +1330,7 @@ mod test {
         env.mock_all_auths();
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 0);
 
         client.set_dispute_window(&10u32);
@@ -1446,7 +1460,7 @@ mod test {
         env.mock_all_auths();
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 0);
 
         let swap_id = pending_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id, 500);
@@ -1505,7 +1519,7 @@ mod test {
         env.mock_all_auths();
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 0);
 
         let swap_id = pending_swap(&env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id, 500);
@@ -1591,7 +1605,7 @@ mod test {
         env.mock_all_auths();
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 500, 0);
 
         client.set_dispute_window(&5u32);

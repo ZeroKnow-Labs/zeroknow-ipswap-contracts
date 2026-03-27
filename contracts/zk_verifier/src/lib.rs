@@ -236,7 +236,8 @@ mod test {
             .crypto()
             .sha256(&Bytes::from_slice(&env, b"fake"))
             .into();
-        client.set_merkle_root(&attacker, &1u64, &fake_root);
+        let result = client.try_set_merkle_root(&attacker, &1u64, &fake_root);
+        assert!(result.is_err(), "attacker should not be able to overwrite owner's root");
     }
 
     #[test]
