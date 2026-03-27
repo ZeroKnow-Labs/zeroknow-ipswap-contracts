@@ -13,6 +13,7 @@ pub enum ContractError {
     EmptyDecryptionKey = 1,
     SwapNotFound = 2,
     InvalidAmount = 3,
+    DisputeWindowTooShort = 4,
 }
 
 #[contracttype]
@@ -29,6 +30,7 @@ pub struct Config {
     pub fee_bps: u32,
     pub fee_recipient: Address,
     pub cancel_delay_secs: u64,
+    pub dispute_window_ledgers: u32,
 }
 
 #[contracttype]
@@ -81,6 +83,7 @@ impl AtomicSwap {
                 fee_bps,
                 fee_recipient,
                 cancel_delay_secs,
+                dispute_window_ledgers: 100,
             },
         );
         env.storage()
@@ -111,6 +114,29 @@ impl AtomicSwap {
             .expect("not initialized");
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &false);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+    }
+
+    /// Sets the dispute window in ledgers. Admin only. Minimum value is 100 ledgers.
+    pub fn set_dispute_window(env: Env, ledgers: u32) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        admin.require_auth();
+        if ledgers < 100 {
+            panic_with_error!(&env, ContractError::DisputeWindowTooShort);
+        }
+        let mut config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .expect("not initialized");
+        config.dispute_window_ledgers = ledgers;
+        env.storage().instance().set(&DataKey::Config, &config);
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
@@ -1094,5 +1120,49 @@ mod test {
             Some(SwapStatus::Cancelled)
         );
         assert_eq!(usdc_client.balance(&buyer), 1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #4)")]
+    fn test_set_dispute_window_rejects_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64);
+
+        // 0 ledgers is below the minimum of 100 — must panic with DisputeWindowTooShort
+        client.set_dispute_window(&0u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #4)")]
+    fn test_set_dispute_window_rejects_below_minimum() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64);
+
+        // 99 is still below the minimum of 100
+        client.set_dispute_window(&99u32);
+    }
+
+    #[test]
+    fn test_set_dispute_window_accepts_minimum() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64);
+
+        // exactly 100 should succeed
+        client.set_dispute_window(&100u32);
     }
 }
