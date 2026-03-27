@@ -29,6 +29,8 @@ pub enum ContractError {
     UnderpaymentNotAllowed = 14,
     /// Configured fee_bps would compute to zero for this usdc_amount.
     FeeWouldTruncate = 15,
+    /// fee_bps exceeds 10_000 (100%).
+    InvalidFee = 16,
 }
 
 #[contracttype]
@@ -137,6 +139,16 @@ pub struct AdminTransferred {
     pub new_admin: Address,
 }
 
+/// Emitted when the contract configuration is updated by the admin.
+#[contractevent]
+pub struct ConfigUpdated {
+    #[topic]
+    pub admin: Address,
+    pub fee_bps: u32,
+    pub fee_recipient: Address,
+    pub cancel_delay_secs: u64,
+}
+
 #[contract]
 pub struct AtomicSwap;
 
@@ -199,6 +211,46 @@ impl AtomicSwap {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+    }
+
+    pub fn update_config(
+        env: Env,
+        admin: Address,
+        fee_bps: u32,
+        fee_recipient: Address,
+        cancel_delay_secs: u64,
+    ) {
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        admin.require_auth();
+        if admin != stored_admin {
+            env.panic_with_error(ContractError::NotInitialized); // reuse Unauthorized-equivalent
+        }
+        if fee_bps > 10_000 {
+            env.panic_with_error(ContractError::InvalidFee);
+        }
+        let mut config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        config.fee_bps = fee_bps;
+        config.fee_recipient = fee_recipient.clone();
+        config.cancel_delay_secs = cancel_delay_secs;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        ConfigUpdated {
+            admin,
+            fee_bps,
+            fee_recipient,
+            cancel_delay_secs,
+        }
+        .publish(&env);
     }
 
     pub fn pause(env: Env) {
@@ -1768,5 +1820,86 @@ mod test {
         client.cancel_swap(&swap_id);
 
         assert!(client.is_listing_available(&listing_id));
+    }
+
+    // ── update_config tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_update_config_authorized_updates_values_and_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let new_recipient = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 10_000);
+        let usdc_client = token::Client::new(&env, &usdc_id);
+        let (registry_id, listing_id) = setup_registry(&env, &seller, 0);
+        let zk_verifier = Address::generate(&env);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(&admin, &100u32, &Address::generate(&env), &60u64);
+
+        // Update: 500 bps, new recipient, same delay
+        client.update_config(&admin, &500u32, &new_recipient, &60u64);
+
+        // Verify event emitted
+        let events = env.events().all();
+        let found = events.iter().any(|(c, topics, _)| {
+            c == contract_id
+                && topics.len() == 2
+                && topics.get_unchecked(0)
+                    == soroban_sdk::Symbol::new(&env, "ConfigUpdated").into()
+        });
+        assert!(found, "ConfigUpdated event not emitted");
+
+        // Verify new fee applies on next swap
+        let swap_id = client.initiate_swap(
+            &listing_id, &buyer, &seller, &usdc_id, &10_000, &zk_verifier, &registry_id,
+        );
+        client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"key"));
+        client.set_dispute_window(&10u32);
+        env.ledger().with_mut(|li| li.sequence_number += 11);
+        client.release_to_seller(&swap_id);
+
+        // 500 bps of 10_000 = 500 fee; seller gets 9_500
+        assert_eq!(usdc_client.balance(&new_recipient), 500);
+        assert_eq!(usdc_client.balance(&seller), 9_500);
+    }
+
+    #[test]
+    fn test_update_config_non_admin_fails() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let admin = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        env.mock_all_auths();
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64);
+
+        // Attacker tries to update config — should fail auth check
+        let result = client.try_update_config(
+            &attacker,
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+        );
+        assert!(result.is_err(), "non-admin update_config should fail");
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #16)")]
+    fn test_update_config_fee_bps_over_10000_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64);
+        client.update_config(&admin, &11_000u32, &Address::generate(&env), &60u64);
     }
 }
