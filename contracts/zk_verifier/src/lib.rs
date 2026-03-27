@@ -1,5 +1,15 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
+
+/// Emitted when a Merkle root is set or updated for a listing.
+#[contractevent]
+pub struct MerkleRootSet {
+    #[topic]
+    pub listing_id: u64,
+    #[topic]
+    pub owner: Address,
+    pub merkle_root: BytesN<32>,
+}
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -56,6 +66,11 @@ impl ZkVerifier {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        env.events().publish(MerkleRootSet {
+            listing_id,
+            owner,
+            merkle_root: root,
+        });
     }
 
     /// Retrieves the stored Merkle root for a given listing, or None if not set.
@@ -101,7 +116,7 @@ impl ZkVerifier {
 mod test {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
+        testutils::{Address as _, Events as _, Ledger as _},
         Bytes, Env, Vec,
     };
 
@@ -167,5 +182,34 @@ mod test {
             .sha256(&Bytes::from_slice(&env, b"fake"))
             .into();
         client.set_merkle_root(&attacker, &1u64, &fake_root);
+    }
+
+    #[test]
+    fn test_set_merkle_root_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let leaf = Bytes::from_slice(&env, b"ip_asset:v1");
+        let root: BytesN<32> = env.crypto().sha256(&leaf).into();
+
+        client.set_merkle_root(&owner, &7u64, &root);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+
+        let (_, topics, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) =
+            events.first().unwrap();
+
+        // topics[0] = listing_id, topics[1] = owner (per #[contractevent] #[topic] ordering)
+        let emitted_listing_id: u64 = soroban_sdk::FromVal::from_val(&env, &topics.get(0).unwrap());
+        let emitted_owner: Address = soroban_sdk::FromVal::from_val(&env, &topics.get(1).unwrap());
+        let emitted_root: BytesN<32> = soroban_sdk::FromVal::from_val(&env, &data);
+
+        assert_eq!(emitted_listing_id, 7u64);
+        assert_eq!(emitted_owner, owner);
+        assert_eq!(emitted_root, root);
     }
 }
