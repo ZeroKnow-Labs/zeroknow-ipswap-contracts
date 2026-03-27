@@ -186,6 +186,24 @@ impl AtomicSwap {
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
     }
 
+    pub fn transfer_admin(env: Env, new_admin: Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        AdminTransferred {
+            old_admin: admin,
+            new_admin,
+        }
+        .publish(&env);
+    }
+
     pub fn set_dispute_window(env: Env, ledgers: u32) {
         let admin: Address = env
             .storage()
@@ -1776,5 +1794,37 @@ mod test {
         client.cancel_swap(&swap_id);
 
         assert!(client.is_listing_available(&listing_id));
+    }
+
+    #[test]
+    fn test_transfer_admin_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        let zk_verifier = Address::generate(&env);
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64, &zk_verifier);
+        client.transfer_admin(&new_admin);
+        // new admin can now call an admin-only function without panic
+        client.set_dispute_window(&100u32);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_transfer_admin_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let admin = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        let zk_verifier = Address::generate(&env);
+        env.mock_all_auths();
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64, &zk_verifier);
+        // attacker tries to transfer admin without holding the current admin key
+        env.mock_all_auths_allowing_non_root_auth();
+        client.transfer_admin(&attacker);
     }
 }
