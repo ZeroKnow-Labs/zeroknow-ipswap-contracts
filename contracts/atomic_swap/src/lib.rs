@@ -1374,6 +1374,45 @@ mod test {
     }
 
     #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_initiate_swap_rejects_nonexistent_listing() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let usdc_id = setup_usdc(&env, &buyer, 1_000);
+
+        // Initialize an empty registry (no listings created).
+        let registry_id = env.register(IpRegistry, ());
+        let registry = IpRegistryClient::new(&env, &registry_id);
+        let registry_admin = Address::generate(&env);
+        registry.initialize(&registry_admin, &100_000u32, &6_312_000u32);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        let zk_id = env.register(ZkVerifier, ());
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+            &zk_id,
+        );
+
+        // No listing with this id exists in registry.
+        client.initiate_swap(
+            &999_999u64,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500i128,
+            &zk_id,
+            &registry_id,
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "Error(Contract, #9)")]
     fn test_seller_impersonation_rejected() {
         let env = Env::default();
