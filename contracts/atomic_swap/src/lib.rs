@@ -30,6 +30,8 @@ pub enum ContractError {
     FeeWouldTruncate = 15,
     /// Caller-supplied zk_verifier does not match the trusted address stored in Config.
     InvalidVerifier = 16,
+    /// fee_bps supplied to update_config exceeds 10_000 (100%).
+    InvalidFee = 17,
 }
 
 #[contracttype]
@@ -1823,15 +1825,24 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #16)")]
-    fn test_update_config_fee_bps_over_10000_panics() {
+    fn test_update_config_rejects_fee_bps_over_10000_with_invalid_fee() {
         let env = Env::default();
         env.mock_all_auths();
         let admin = Address::generate(&env);
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
         client.initialize(&admin, &0u32, &Address::generate(&env), &60u64);
-        client.update_config(&admin, &11_000u32, &Address::generate(&env), &60u64);
+
+        let result = client.try_update_config(
+            &admin,
+            &10_001u32,
+            &Address::generate(&env),
+            &60u64,
+        );
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(ContractError::InvalidFee as u32)))
+        );
     }
 
     #[test]
