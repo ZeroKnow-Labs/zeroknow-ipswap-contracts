@@ -526,13 +526,8 @@ impl AtomicSwap {
                 .instance()
                 .get::<DataKey, Config>(&DataKey::Config)
             {
-<<<<<<< fix/issues-261-262-263-264
-                let fee: i128 = swap.usdc_amount * config.fee_bps as i128 / 10_000;
-                let mut seller_amount = swap.usdc_amount - fee;
-=======
                 let fee = Self::calculate_fee_amount(&env, swap.usdc_amount, config.fee_bps);
                 let seller_amount = swap.usdc_amount - fee;
->>>>>>> main
                 if fee > 0 {
                     usdc.transfer(&contract_addr, &config.fee_recipient, &fee);
                 }
@@ -774,6 +769,19 @@ mod test {
             &zk_verifier,
             &registry_id,
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #3)")]
+    fn test_initiate_swap_rejects_zero_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, _cid, client, _admin) =
+            setup_full(&env, &buyer, &seller, 1000, 0);
+        client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &0, &zk_verifier, &registry_id);
     }
 
     #[test]
