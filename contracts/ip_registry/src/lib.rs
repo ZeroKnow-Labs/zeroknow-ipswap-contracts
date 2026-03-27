@@ -4,8 +4,8 @@ use soroban_sdk::{
     panic_with_error, Address, Bytes, Env, Vec,
 };
 
-/// Entry for batch IP registration: (ipfs_hash, merkle_root)
-pub type IpEntry = (Bytes, Bytes);
+/// Entry for batch IP registration: (ipfs_hash, merkle_root, royalty_bps, royalty_recipient, price_usdc)
+pub type IpEntry = (Bytes, Bytes, u32, Address, i128);
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -257,9 +257,12 @@ impl IpRegistry {
     pub fn batch_register_ip(env: Env, owner: Address, entries: Vec<IpEntry>) -> Vec<u64> {
         let mut i: u32 = 0;
         while i < entries.len() {
-            let (ipfs_hash, merkle_root) = entries.get(i).unwrap();
-            if ipfs_hash.is_empty() || merkle_root.is_empty() {
+            let (ipfs_hash, merkle_root, royalty_bps, _royalty_recipient, price_usdc) = entries.get(i).unwrap();
+            if ipfs_hash.is_empty() || merkle_root.is_empty() || price_usdc < 0 || royalty_bps > 10_000 {
                 panic_with_error!(&env, ContractError::InvalidInput);
+            }
+            if price_usdc <= 0 {
+                panic_with_error!(&env, ContractError::InvalidPrice);
             }
             i += 1;
         }
@@ -273,7 +276,7 @@ impl IpRegistry {
 
         let mut j: u32 = 0;
         while j < entries.len() {
-            let (ipfs_hash, merkle_root) = entries.get(j).unwrap();
+            let (ipfs_hash, merkle_root, royalty_bps, royalty_recipient, price_usdc) = entries.get(j).unwrap();
 
             let prev: u64 = env
                 .storage()
@@ -293,9 +296,9 @@ impl IpRegistry {
                     owner: owner.clone(),
                     ipfs_hash: ipfs_hash.clone(),
                     merkle_root: merkle_root.clone(),
-                    royalty_bps: 0,
-                    royalty_recipient: owner.clone(),
-                    price_usdc: 0,
+                    royalty_bps,
+                    royalty_recipient,
+                    price_usdc,
                 },
             );
             extend_persistent(&env, &key, &cfg);
@@ -766,10 +769,16 @@ mod test {
         entries.push_back((
             Bytes::from_slice(&env, b"QmHash1"),
             Bytes::from_slice(&env, b"root1"),
+            500,
+            owner.clone(),
+            1000,
         ));
         entries.push_back((
             Bytes::from_slice(&env, b"QmHash2"),
             Bytes::from_slice(&env, b"root2"),
+            500,
+            owner.clone(),
+            1000,
         ));
         let ids = client.batch_register_ip(&owner, &entries);
         assert_eq!(ids.len(), 2);
@@ -793,7 +802,7 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let mut entries: Vec<IpEntry> = Vec::new(&env);
-        entries.push_back((Bytes::new(&env), Bytes::from_slice(&env, b"root")));
+        entries.push_back((Bytes::new(&env), Bytes::from_slice(&env, b"root"), 500, owner.clone(), 1000));
         assert!(client.try_batch_register_ip(&owner, &entries).is_err());
     }
 
@@ -805,8 +814,11 @@ mod test {
         entries.push_back((
             Bytes::from_slice(&env, b"QmHash1"),
             Bytes::from_slice(&env, b"root1"),
+            500,
+            owner.clone(),
+            1000,
         ));
-        entries.push_back((Bytes::new(&env), Bytes::from_slice(&env, b"root2")));
+        entries.push_back((Bytes::new(&env), Bytes::from_slice(&env, b"root2"), 500, owner.clone(), 1000));
         assert!(client.try_batch_register_ip(&owner, &entries).is_err());
         assert_eq!(client.listing_count(), 0);
     }
@@ -849,10 +861,16 @@ mod test {
         entries.push_back((
             Bytes::from_slice(&env, b"QmHash1"),
             Bytes::from_slice(&env, b"root1"),
+            500,
+            owner.clone(),
+            1000,
         ));
         entries.push_back((
             Bytes::from_slice(&env, b"QmHash2"),
             Bytes::from_slice(&env, b"root2"),
+            500,
+            owner.clone(),
+            1000,
         ));
         client.batch_register_ip(&owner, &entries);
         // Events are emitted; verify no panic and count is correct.
