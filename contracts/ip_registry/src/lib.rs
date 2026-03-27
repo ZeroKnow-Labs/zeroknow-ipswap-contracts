@@ -17,13 +17,27 @@ pub enum ContractError {
     Unauthorized = 5,
     NotInitialized = 6,
     AlreadyInitialized = 7,
+    InvalidPrice = 8,
 }
+
+
+
+
+
 
 /// Minimal interface to check for a pending swap on a listing.
 #[contractclient(name = "AtomicSwapClient")]
 pub trait AtomicSwapInterface {
     fn has_pending_swap(env: Env, listing_id: u64) -> bool;
 }
+
+
+
+
+
+
+
+
 
 #[contracttype]
 #[derive(Clone)]
@@ -32,6 +46,15 @@ pub struct Config {
     pub ttl_threshold: u32,
     pub ttl_extend_to: u32,
 }
+
+
+
+
+
+
+
+
+
 
 #[contracttype]
 #[derive(Clone)]
@@ -174,6 +197,9 @@ impl IpRegistry {
         if ipfs_hash.is_empty() || merkle_root.is_empty() || price_usdc < 0 || royalty_bps > 10_000
         {
             return Err(ContractError::InvalidInput);
+        }
+        if price_usdc <= 0 {
+            return Err(ContractError::InvalidPrice);
         }
         owner.require_auth();
         let cfg = get_config(&env);
@@ -575,7 +601,7 @@ mod test {
         assert_eq!(cfg.ttl_extend_to, 3_000_000);
 
         let owner = Address::generate(&env);
-        let id = register(&client, &owner, b"QmHash", b"root", 0);
+        let id = register(&client, &owner, b"QmHash", b"root", 1);
         assert!(client.get_listing(&id).is_some());
     }
 
@@ -644,13 +670,31 @@ mod test {
     }
 
     #[test]
+    fn test_register_rejects_zero_price() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let result = client.try_register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &0u32,
+            &owner,
+            &0i128,
+        );
+        assert_eq!(result, Err(Ok(ContractError::InvalidPrice)));
+    }
+
+    #[test]
     fn test_listing_count() {
         let (env, client, _admin) = setup();
         assert_eq!(client.listing_count(), 0);
         let owner = Address::generate(&env);
-        register(&client, &owner, b"QmHash1", b"root1", 0);
+        register(&client, &owner, b"QmHash1", b"root1", 1);
         assert_eq!(client.listing_count(), 1);
-        register(&client, &owner, b"QmHash2", b"root2", 0);
+        register(&client, &owner, b"QmHash2", b"root2", 1);
         assert_eq!(client.listing_count(), 2);
     }
 
@@ -659,9 +703,9 @@ mod test {
         let (env, client, _admin) = setup();
         let owner_a = Address::generate(&env);
         let owner_b = Address::generate(&env);
-        let id1 = register(&client, &owner_a, b"QmHash1", b"root1", 0);
-        let id2 = register(&client, &owner_b, b"QmHash2", b"root2", 0);
-        let id3 = register(&client, &owner_a, b"QmHash3", b"root3", 0);
+        let id1 = register(&client, &owner_a, b"QmHash1", b"root1", 1);
+        let id2 = register(&client, &owner_b, b"QmHash2", b"root2", 1);
+        let id3 = register(&client, &owner_a, b"QmHash3", b"root3", 1);
         let a_ids = client.list_by_owner(&owner_a);
         assert_eq!(a_ids.len(), 2);
         assert_eq!(a_ids.get(0).unwrap(), id1);
@@ -675,7 +719,7 @@ mod test {
     fn test_listing_survives_ttl_boundary() {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
-        let id = register(&client, &owner, b"QmHash", b"root", 0);
+        let id = register(&client, &owner, b"QmHash", b"root", 1);
         env.ledger().with_mut(|li| li.sequence_number += 5_000);
         assert!(client.get_listing(&id).is_some());
     }
@@ -684,12 +728,12 @@ mod test {
     fn test_counter_persists_across_ttl_boundary() {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
-        let id1 = register(&client, &owner, b"QmHash1", b"root1", 0);
-        let id2 = register(&client, &owner, b"QmHash2", b"root2", 0);
+        let id1 = register(&client, &owner, b"QmHash1", b"root1", 1);
+        let id2 = register(&client, &owner, b"QmHash2", b"root2", 1);
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
         env.ledger().with_mut(|li| li.sequence_number += 6_400_000);
-        let id3 = register(&client, &owner, b"QmHash3", b"root3", 0);
+        let id3 = register(&client, &owner, b"QmHash3", b"root3", 1);
         assert_eq!(id3, 3, "Counter reset after TTL — ID collision risk");
         assert_eq!(client.listing_count(), 3);
     }
@@ -701,7 +745,7 @@ mod test {
         let mut seen: Vec<u64> = Vec::new(&env);
         let mut i: u32 = 0;
         while i < 20 {
-            let id = register(&client, &owner, b"QmHash", b"root", 0);
+            let id = register(&client, &owner, b"QmHash", b"root", 1);
             assert_eq!(id, (i + 1) as u64);
             let mut j: u32 = 0;
             while j < seen.len() {
@@ -771,7 +815,7 @@ mod test {
     fn test_deregister_listing_success() {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
-        let id = register(&client, &owner, b"QmHash", b"root", 0);
+        let id = register(&client, &owner, b"QmHash", b"root", 1);
         client.deregister_listing(&owner, &id);
         assert!(client.get_listing(&id).is_none());
         assert_eq!(client.list_by_owner(&owner).len(), 0);
@@ -782,7 +826,7 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let attacker = Address::generate(&env);
-        let id = register(&client, &owner, b"QmHash", b"root", 0);
+        let id = register(&client, &owner, b"QmHash", b"root", 1);
         let result = client.try_deregister_listing(&attacker, &id);
         assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
         assert!(client.get_listing(&id).is_some());
@@ -875,7 +919,7 @@ mod test {
         let owner = Address::generate(&env);
         let attacker = Address::generate(&env);
         let new_owner = Address::generate(&env);
-        let id = register(&client, &owner, b"QmHash", b"root", 0);
+        let id = register(&client, &owner, b"QmHash", b"root", 1);
 
         let result = client.try_transfer_listing_ownership(&attacker, &id, &new_owner);
         assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
