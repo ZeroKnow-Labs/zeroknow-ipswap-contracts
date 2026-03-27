@@ -1571,16 +1571,23 @@ mod test {
             1000,
         );
 
-        // SwapInitiated topics: [swap_id, listing_id]; data: (buyer, seller, usdc_amount)
+        // Assert exactly one SwapInitiated event with correct topics and data.
+        // topics: [swap_id, listing_id]  data: (buyer, seller, usdc_amount)
         let events = env.events().all();
         let swap_id_val: soroban_sdk::Val = swap_id.into_val(&env);
         let listing_id_val: soroban_sdk::Val = listing_id.into_val(&env);
-        let matched = events.iter().any(|(_, topics, _)| {
-            topics.len() == 2
-                && topics.get_unchecked(0) == swap_id_val
-                && topics.get_unchecked(1) == listing_id_val
-        });
-        assert!(matched, "SwapInitiated event not emitted");
+        let matching: Vec<_> = events
+            .iter()
+            .filter(|(_, topics, _)| {
+                topics.len() == 2
+                    && topics.get_unchecked(0) == swap_id_val
+                    && topics.get_unchecked(1) == listing_id_val
+            })
+            .collect();
+        assert_eq!(matching.len(), 1, "expected exactly one SwapInitiated event, got {}", matching.len());
+        let (_, _, data) = &matching[0];
+        let expected_data = (buyer.clone(), seller.clone(), 1000i128).into_val(&env);
+        assert_eq!(*data, expected_data, "SwapInitiated event data mismatch");
     }
 
     fn confirmed_swap(
