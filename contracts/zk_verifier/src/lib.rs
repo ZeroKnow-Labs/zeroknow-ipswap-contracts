@@ -106,6 +106,13 @@ impl ZkVerifier {
             .get(&DataKey::MerkleRoot(listing_id))
     }
 
+    /// Retrieves the owner of a listing's Merkle root, or None if no root has been set.
+    pub fn get_owner(env: Env, listing_id: u64) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Owner(listing_id))
+    }
+
     /// Verify a Merkle inclusion proof for a leaf against the stored root.
     ///
     /// # Proof format
@@ -193,6 +200,32 @@ mod test {
         let contract_id = env.register(ZkVerifier, ());
         let client = ZkVerifierClient::new(&env, &contract_id);
         assert_eq!(client.get_merkle_root(&99u64), None);
+    }
+
+    #[test]
+    fn test_get_owner_returns_none_when_no_root() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+        assert_eq!(client.get_owner(&99u64), None);
+    }
+
+    #[test]
+    fn test_get_owner_returns_correct_owner() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ZkVerifier, ());
+        let client = ZkVerifierClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let root: BytesN<32> = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, b"root"))
+            .into();
+        client.set_merkle_root(&owner, &1u64, &root);
+
+        assert_eq!(client.get_owner(&1u64), Some(owner));
     }
 
     #[test]
