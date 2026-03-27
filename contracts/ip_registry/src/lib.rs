@@ -1087,6 +1087,36 @@ mod test {
     }
 
     #[test]
+    #[should_panic(expected = "Error(Contract, #1)")]
+    fn test_update_listing_rejects_empty_ipfs_hash() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        
+        client.update_listing(
+            &owner,
+            &id,
+            &Bytes::new(&env),
+            &Bytes::from_slice(&env, b"newRoot"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #1)")]
+    fn test_update_listing_rejects_empty_merkle_root() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        
+        client.update_listing(
+            &owner,
+            &id,
+            &Bytes::from_slice(&env, b"newHash"),
+            &Bytes::new(&env),
+        );
+    }
+
+    #[test]
     fn test_register_ip_allowed_after_unpause() {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
