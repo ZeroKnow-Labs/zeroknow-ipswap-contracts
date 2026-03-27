@@ -85,6 +85,16 @@ pub struct TtlUpdated {
     pub new_extend_to: u32,
 }
 
+#[contractevent]
+pub struct OwnershipTransferred {
+    #[topic]
+    pub listing_id: u64,
+    #[topic]
+    pub from: Address,
+    #[topic]
+    pub to: Address,
+}
+
 #[contract]
 pub struct IpRegistry;
 
@@ -413,6 +423,72 @@ impl IpRegistry {
         env.storage().persistent().set(&idx_key, &ids);
 
         IpDeregistered { listing_id, owner }.publish(&env);
+
+        Ok(())
+    }
+
+    /// Transfer ownership of a listing to a new owner.
+    /// Requires current owner auth. Rejects if a pending swap exists for the listing.
+    pub fn transfer_listing_ownership(
+        env: Env,
+        owner: Address,
+        listing_id: u64,
+        new_owner: Address,
+    ) -> Result<(), ContractError> {
+        owner.require_auth();
+
+        let key = DataKey::Listing(listing_id);
+        let mut listing: Listing = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::ListingNotFound)?;
+
+        if listing.owner != owner {
+            return Err(ContractError::Unauthorized);
+        }
+
+        let cfg = get_config(&env);
+
+        // Remove listing_id from old owner's index
+        let old_idx_key = DataKey::OwnerIndex(owner.clone());
+        let mut old_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&old_idx_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        if let Some(pos) = (0..old_ids.len()).find(|&i| old_ids.get(i).unwrap() == listing_id) {
+            old_ids.remove(pos);
+        }
+        env.storage().persistent().set(&old_idx_key, &old_ids);
+        extend_persistent(&env, &old_idx_key, &cfg);
+
+        // Add listing_id to new owner's index
+        let new_idx_key = DataKey::OwnerIndex(new_owner.clone());
+        let mut new_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&new_idx_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        new_ids.push_back(listing_id);
+        env.storage().persistent().set(&new_idx_key, &new_ids);
+        extend_persistent(&env, &new_idx_key, &cfg);
+
+        // Update listing owner
+        listing.owner = new_owner.clone();
+        env.storage().persistent().set(&key, &listing);
+        extend_persistent(&env, &key, &cfg);
+
+        env.storage()
+            .instance()
+            .extend_ttl(cfg.ttl_threshold, cfg.ttl_extend_to);
+
+        OwnershipTransferred {
+            listing_id,
+            from: owner,
+            to: new_owner,
+        }
+        .publish(&env);
 
         Ok(())
     }
