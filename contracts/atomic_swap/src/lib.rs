@@ -249,6 +249,29 @@ impl AtomicSwap {
         ContractUnpausedEvent { admin }.publish(&env);
     }
 
+    /// Sets the dispute window in ledgers. Admin only. Minimum value is 100 ledgers.
+    pub fn set_dispute_window(env: Env, ledgers: u32) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        admin.require_auth();
+        if ledgers < 100 {
+            panic_with_error!(&env, ContractError::DisputeWindowTooShort);
+        }
+        let mut config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .expect("not initialized");
+        config.dispute_window_ledgers = ledgers;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+    }
+
     fn assert_not_paused(env: &Env) {
         let paused: bool = env
             .storage()
