@@ -249,29 +249,6 @@ impl AtomicSwap {
         ContractUnpausedEvent { admin }.publish(&env);
     }
 
-    /// Sets the dispute window in ledgers. Admin only. Minimum value is 100 ledgers.
-    pub fn set_dispute_window(env: Env, ledgers: u32) {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("not initialized");
-        admin.require_auth();
-        if ledgers < 100 {
-            panic_with_error!(&env, ContractError::DisputeWindowTooShort);
-        }
-        let mut config: Config = env
-            .storage()
-            .instance()
-            .get(&DataKey::Config)
-            .expect("not initialized");
-        config.dispute_window_ledgers = ledgers;
-        env.storage().instance().set(&DataKey::Config, &config);
-        env.storage()
-            .instance()
-            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
-    }
-
     fn assert_not_paused(env: &Env) {
         let paused: bool = env
             .storage()
@@ -471,8 +448,14 @@ impl AtomicSwap {
 
         SwapConfirmed {
             swap_id,
-            seller: swap.seller,
+            seller: swap.seller.clone(),
             decryption_key,
+        }
+        .publish(&env);
+
+        SwapCompleted {
+            swap_id,
+            seller: swap.seller,
         }
         .publish(&env);
     }
@@ -772,8 +755,8 @@ mod test {
     use super::*;
     use ip_registry::{IpRegistry, IpRegistryClient};
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
-        token, Bytes, Env, IntoVal,
+        testutils::{Address as _, Events, Ledger as _},
+        token, Bytes, Env, IntoVal, TryFromVal,
     };
     use zk_verifier::{ProofNode, ZkVerifier, ZkVerifierClient};
 
@@ -1547,16 +1530,18 @@ mod test {
             1000,
         );
 
-        // SwapInitiated topics: [swap_id, listing_id]; data: (buyer, seller, usdc_amount)
-        let events = env.events().all();
-        let swap_id_val: soroban_sdk::Val = swap_id.into_val(&env);
-        let listing_id_val: soroban_sdk::Val = listing_id.into_val(&env);
-        let matched = events.iter().any(|(_, topics, _)| {
-            topics.len() == 2
-                && topics.get_unchecked(0) == swap_id_val
-                && topics.get_unchecked(1) == listing_id_val
+        // Check SwapInitiated event: topics = ["swap_initiated", swap_id, listing_id]
+        let swap_id_xdr = soroban_sdk::xdr::ScVal::try_from_val(&env, &<u64 as IntoVal<Env, soroban_sdk::Val>>::into_val(&swap_id, &env)).unwrap();
+        let listing_id_xdr = soroban_sdk::xdr::ScVal::try_from_val(&env, &<u64 as IntoVal<Env, soroban_sdk::Val>>::into_val(&listing_id, &env)).unwrap();
+        let name_xdr = soroban_sdk::xdr::ScVal::Symbol("swap_initiated".try_into().unwrap());
+        let found = env.events().all().filter_by_contract(&_cid).events().iter().any(|e| {
+            let body = match &e.body { soroban_sdk::xdr::ContractEventBody::V0(b) => b };
+            body.topics.len() == 3
+                && body.topics[0] == name_xdr
+                && body.topics[1] == swap_id_xdr
+                && body.topics[2] == listing_id_xdr
         });
-        assert!(matched, "SwapInitiated event not emitted");
+        assert!(found, "SwapInitiated event not emitted");
     }
 
     fn confirmed_swap(
@@ -1738,10 +1723,13 @@ mod test {
         client.pause();
 
         let admin_val: soroban_sdk::Val = admin.into_val(&env);
-        let matched = env.events().all().iter().any(|(_, topics, _)| {
-            topics.len() == 1 && topics.get_unchecked(0) == admin_val
+        let admin_xdr = soroban_sdk::xdr::ScVal::try_from_val(&env, &admin_val).unwrap();
+        let name_xdr = soroban_sdk::xdr::ScVal::Symbol("contract_paused_event".try_into().unwrap());
+        let found = env.events().all().filter_by_contract(&contract_id).events().iter().any(|e| {
+            let body = match &e.body { soroban_sdk::xdr::ContractEventBody::V0(b) => b };
+            body.topics.len() == 2 && body.topics[0] == name_xdr && body.topics[1] == admin_xdr
         });
-        assert!(matched, "ContractPausedEvent not emitted");
+        assert!(found, "ContractPausedEvent not emitted");
     }
 
     #[test]
@@ -1757,10 +1745,13 @@ mod test {
         client.unpause();
 
         let admin_val: soroban_sdk::Val = admin.into_val(&env);
-        let matched = env.events().all().iter().any(|(_, topics, _)| {
-            topics.len() == 1 && topics.get_unchecked(0) == admin_val
+        let admin_xdr = soroban_sdk::xdr::ScVal::try_from_val(&env, &admin_val).unwrap();
+        let name_xdr = soroban_sdk::xdr::ScVal::Symbol("contract_unpaused_event".try_into().unwrap());
+        let found = env.events().all().filter_by_contract(&contract_id).events().iter().any(|e| {
+            let body = match &e.body { soroban_sdk::xdr::ContractEventBody::V0(b) => b };
+            body.topics.len() == 2 && body.topics[0] == name_xdr && body.topics[1] == admin_xdr
         });
-        assert!(matched, "ContractUnpausedEvent not emitted");
+        assert!(found, "ContractUnpausedEvent not emitted");
     }
 
     #[test]
@@ -1869,6 +1860,49 @@ mod test {
             client.get_swap_status(&swap_id),
             Some(SwapStatus::Completed)
         );
+    }
+
+    #[test]
+    fn test_confirm_swap_emits_swap_completed_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let usdc_id = setup_usdc(&env, &buyer, 500);
+        let (registry_id, listing_id) = setup_registry(&env, &seller, 1);
+        let key_bytes = Bytes::from_slice(&env, b"secret-key");
+        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        client.initialize(
+            &Address::generate(&env),
+            &0u32,
+            &Address::generate(&env),
+            &60u64,
+            &zk_id,
+        );
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_id,
+            &registry_id,
+        );
+
+        client.confirm_swap(&swap_id, &key_bytes, &proof_path);
+
+        // SwapCompleted: topics = ["swap_completed", swap_id]; data = map { seller: address }
+        let swap_id_xdr = soroban_sdk::xdr::ScVal::try_from_val(&env, &<u64 as IntoVal<Env, soroban_sdk::Val>>::into_val(&swap_id, &env)).unwrap();
+        let name_xdr = soroban_sdk::xdr::ScVal::Symbol("swap_completed".try_into().unwrap());
+        let found = env.events().all().filter_by_contract(&contract_id).events().iter().any(|e| {
+            let body = match &e.body { soroban_sdk::xdr::ContractEventBody::V0(b) => b };
+            body.topics.len() == 2
+                && body.topics[0] == name_xdr
+                && body.topics[1] == swap_id_xdr
+        });
+        assert!(found, "SwapCompleted event not emitted on confirm_swap");
     }
 
     #[test]
