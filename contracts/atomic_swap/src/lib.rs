@@ -750,14 +750,21 @@ impl AtomicSwap {
     }
 
     pub fn get_swap(env: Env, swap_id: u64) -> Option<Swap> {
-        env.storage().persistent().get(&DataKey::Swap(swap_id))
+        let key = DataKey::Swap(swap_id);
+        let swap: Option<Swap> = env.storage().persistent().get(&key);
+        if swap.is_some() {
+            env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        }
+        swap
     }
 
     pub fn get_decryption_key(env: Env, swap_id: u64) -> Option<Bytes> {
-        env.storage()
-            .persistent()
-            .get::<DataKey, Swap>(&DataKey::Swap(swap_id))
-            .and_then(|swap| swap.decryption_key)
+        let key = DataKey::Swap(swap_id);
+        let swap: Option<Swap> = env.storage().persistent().get(&key);
+        if swap.is_some() {
+            env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        }
+        swap.and_then(|s| s.decryption_key)
     }
 
     pub fn get_config(env: Env) -> Option<Config> {
