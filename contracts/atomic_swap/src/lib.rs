@@ -662,6 +662,11 @@ impl AtomicSwap {
         env.storage()
             .persistent()
             .extend_ttl(&key, PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        // Remove stale ActiveListingSwap so future initiate_swap calls on the
+        // same listing are not blocked by SwapAlreadyPending.
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ActiveListingSwap(swap.listing_id));
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
@@ -2149,19 +2154,62 @@ mod test {
         assert!(client.is_listing_available(&listing_id));
     }
 
+    /// Issue #322: cancel_swap must remove ActiveListingSwap so a new buyer can
+    /// immediately initiate a swap on the same listing without hitting SwapAlreadyPending.
     #[test]
-    fn test_get_swaps_by_buyer_page_empty_list() {
+    fn test_cancel_and_reinitiate_swap() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(AtomicSwap, ());
-        let client = AtomicSwapClient::new(&env, &contract_id);
-        let buyer = Address::generate(&env);
-        let page = client.get_swaps_by_buyer_page(&buyer, &0u32, &10u32);
-        assert_eq!(page.len(), 0);
+
+        let buyer1 = Address::generate(&env);
+        let buyer2 = Address::generate(&env);
+        let seller = Address::generate(&env);
+
+        let (usdc_id, listing_id, registry_id, contract_id, client, _admin) =
+            setup_full(&env, &buyer1, &seller, 500, 1);
+        // Give buyer2 funds too.
+        token::StellarAssetClient::new(&env, &usdc_id).mint(&buyer2, &500);
+
+        // Initiate swap for buyer1 — creates ActiveListingSwap entry.
+        let swap_id1 = pending_swap(
+            &env, &client, listing_id, &buyer1, &seller, &usdc_id, &registry_id, 500,
+        );
+
+        // Advance past cancel_delay_secs (60s configured in setup_full).
+        env.ledger()
+            .with_mut(|li| li.timestamp = li.timestamp.saturating_add(61));
+
+        client.cancel_swap(&swap_id1);
+
+        // Verification 1: ActiveListingSwap key must be gone.
+        env.as_contract(&contract_id, || {
+            assert!(
+                !env.storage()
+                    .persistent()
+                    .has(&DataKey::ActiveListingSwap(listing_id)),
+                "ActiveListingSwap should be removed after cancel"
+            );
+        });
+
+        // Verification 2: a different buyer can now initiate a new swap — no DuplicateSwap/SwapAlreadyPending.
+        let swap_id2 = pending_swap(
+            &env, &client, listing_id, &buyer2, &seller, &usdc_id, &registry_id, 500,
+        );
+        assert_ne!(swap_id1, swap_id2);
+
+        // ActiveListingSwap now points to the new swap.
+        env.as_contract(&contract_id, || {
+            let active: u64 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::ActiveListingSwap(listing_id))
+                .expect("ActiveListingSwap should exist for new swap");
+            assert_eq!(active, swap_id2);
+        });
     }
 
     #[test]
-    fn test_get_swaps_by_buyer_page_full_page() {
+    fn test_get_swaps_by_buyer_page_empty_list() {
         let env = Env::default();
         env.mock_all_auths();
         let buyer = Address::generate(&env);
