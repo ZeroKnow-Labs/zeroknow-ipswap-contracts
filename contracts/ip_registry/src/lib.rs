@@ -156,7 +156,7 @@ pub struct IpRegistry;
 
 fn get_config(env: &Env) -> Config {
     env.storage()
-        .instance()
+        .persistent()
         .get(&DataKey::Config)
         .unwrap_or_else(|| panic_with_error!(env, ContractError::NotInitialized))
 }
@@ -187,17 +187,18 @@ impl IpRegistry {
         ttl_threshold: u32,
         ttl_extend_to: u32,
     ) -> Result<(), ContractError> {
-        if env.storage().instance().has(&DataKey::Config) {
+        if env.storage().persistent().has(&DataKey::Config) {
             return Err(ContractError::AlreadyInitialized);
         }
-        env.storage().instance().set(
-            &DataKey::Config,
-            &Config {
-                admin,
-                ttl_threshold,
-                ttl_extend_to,
-            },
-        );
+        let config = Config {
+            admin,
+            ttl_threshold,
+            ttl_extend_to,
+        };
+        env.storage().persistent().set(&DataKey::Config, &config);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Config, ttl_threshold, ttl_extend_to);
         Ok(())
     }
 
@@ -215,7 +216,10 @@ impl IpRegistry {
         }
         cfg.ttl_threshold = new_threshold;
         cfg.ttl_extend_to = new_extend_to;
-        env.storage().instance().set(&DataKey::Config, &cfg);
+        env.storage().persistent().set(&DataKey::Config, &cfg);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Config, cfg.ttl_threshold, cfg.ttl_extend_to);
 
         TtlUpdated {
             admin,
@@ -231,7 +235,7 @@ impl IpRegistry {
     pub fn pause(env: Env) {
         let admin: Address = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Config)
             .map(|cfg: Config| cfg.admin)
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::NotInitialized));
@@ -240,6 +244,9 @@ impl IpRegistry {
         env.storage()
             .instance()
             .extend_ttl(100_000, 6_312_000);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Config, 100_000, 6_312_000);
         ContractPausedEvent { admin }.publish(&env);
     }
 
@@ -247,7 +254,7 @@ impl IpRegistry {
     pub fn unpause(env: Env) {
         let admin: Address = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Config)
             .map(|cfg: Config| cfg.admin)
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::NotInitialized));
@@ -256,6 +263,9 @@ impl IpRegistry {
         env.storage()
             .instance()
             .extend_ttl(100_000, 6_312_000);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Config, 100_000, 6_312_000);
         ContractUnpausedEvent { admin }.publish(&env);
     }
 
@@ -269,8 +279,7 @@ impl IpRegistry {
         price_usdc: i128,
     ) -> Result<u64, ContractError> {
         assert_not_paused(&env);
-        if ipfs_hash.is_empty() || merkle_root.is_empty() || price_usdc < 0 || royalty_bps > 10_000
-        {
+        if ipfs_hash.is_empty() || merkle_root.is_empty() || royalty_bps > 10_000 {
             return Err(ContractError::InvalidInput);
         }
         if price_usdc <= 0 {
@@ -315,8 +324,8 @@ impl IpRegistry {
         extend_persistent(&env, &idx_key, &cfg);
 
         env.storage()
-            .instance()
-            .extend_ttl(cfg.ttl_threshold, cfg.ttl_extend_to);
+            .persistent()
+            .extend_ttl(&DataKey::Config, cfg.ttl_threshold, cfg.ttl_extend_to);
 
         ListingRegistered {
             listing_id: id,
@@ -403,8 +412,8 @@ impl IpRegistry {
         }
 
         env.storage()
-            .instance()
-            .extend_ttl(cfg.ttl_threshold, cfg.ttl_extend_to);
+            .persistent()
+            .extend_ttl(&DataKey::Config, cfg.ttl_threshold, cfg.ttl_extend_to);
 
         BatchIpRegistered {
             owner,
@@ -489,8 +498,8 @@ impl IpRegistry {
         env.storage().persistent().set(&key, &listing);
         extend_persistent(&env, &key, &cfg);
         env.storage()
-            .instance()
-            .extend_ttl(cfg.ttl_threshold, cfg.ttl_extend_to);
+            .persistent()
+            .extend_ttl(&DataKey::Config, cfg.ttl_threshold, cfg.ttl_extend_to);
     }
 
     /// Remove a listing from the registry. Only the owner may call this.
@@ -583,8 +592,8 @@ impl IpRegistry {
         extend_persistent(&env, &key, &cfg);
 
         env.storage()
-            .instance()
-            .extend_ttl(cfg.ttl_threshold, cfg.ttl_extend_to);
+            .persistent()
+            .extend_ttl(&DataKey::Config, cfg.ttl_threshold, cfg.ttl_extend_to);
 
         OwnershipTransferred {
             listing_id,
@@ -607,7 +616,7 @@ mod test {
     use super::*;
     use soroban_sdk::{
         testutils::{Address as _, Ledger as _, Events},
-        Env,
+        Env, IntoVal,
     };
 
     const THRESHOLD: u32 = 100_000;
@@ -744,15 +753,12 @@ mod test {
             &owner,
             &-1i128,
         );
-        assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
+        assert_eq!(result, Err(Ok(ContractError::InvalidPrice)));
     }
 
     #[test]
     fn test_register_rejects_zero_price() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(IpRegistry, ());
-        let client = IpRegistryClient::new(&env, &contract_id);
+        let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let result = client.try_register_ip(
             &owner,
@@ -1082,9 +1088,9 @@ mod test {
         entries.push_back((
             Bytes::from_slice(&env, b"QmHash1"),
             Bytes::from_slice(&env, b"root1"),
-            0u32,
+            500,
             owner.clone(),
-            1i128,
+            1000,
         ));
         client.pause();
         client.batch_register_ip(&owner, &entries);
@@ -1102,6 +1108,36 @@ mod test {
             &id,
             &Bytes::from_slice(&env, b"QmHashNew"),
             &Bytes::from_slice(&env, b"rootNew"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #1)")]
+    fn test_update_listing_rejects_empty_ipfs_hash() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        
+        client.update_listing(
+            &owner,
+            &id,
+            &Bytes::new(&env),
+            &Bytes::from_slice(&env, b"newRoot"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #1)")]
+    fn test_update_listing_rejects_empty_merkle_root() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        
+        client.update_listing(
+            &owner,
+            &id,
+            &Bytes::from_slice(&env, b"newHash"),
+            &Bytes::new(&env),
         );
     }
 
@@ -1155,6 +1191,110 @@ mod test {
         );
 
         let events = env.events().all().filter_by_contract(&client.address);
-        assert!(!events.events().is_empty(), "ListingRegistered event should be emitted");
+        assert!(
+            !events.events().is_empty(),
+            "ListingRegistered event should be emitted"
+        );
+        
+        // Verify an event was emitted (simplified test)
+        let event_count = events.events().len();
+        assert!(event_count >= 1, "At least one event should be emitted");
+    }
+
+    // ── TTL persistence tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_config_survives_past_instance_ttl() {
+        // Test that Config in persistent storage survives past instance TTL expiration
+        let (env, client, admin) = setup();
+        let owner = Address::generate(&env);
+        
+        // Register a listing
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        assert!(client.get_listing(&id).is_some());
+        
+        // Advance ledger far past typical instance TTL (beyond 6,312,000 ledgers)
+        env.ledger().with_mut(|li| li.sequence_number += 7_000_000);
+        
+        // Config should still be accessible from persistent storage
+        let cfg = client.get_config();
+        assert_eq!(cfg.admin, admin);
+        assert_eq!(cfg.ttl_threshold, THRESHOLD);
+        assert_eq!(cfg.ttl_extend_to, EXTEND_TO);
+        
+        // get_listing should still work even though instance storage would have expired
+        let listing = client.get_listing(&id);
+        assert!(listing.is_some(), "Listing should be accessible after instance TTL expiration");
+        assert_eq!(listing.unwrap().owner, owner);
+        
+        // Should be able to register new listings (config still accessible)
+        let id2 = register(&client, &owner, b"QmHash2", b"root2", 2000);
+        assert_eq!(id2, 2);
+        assert!(client.get_listing(&id2).is_some());
+    }
+
+    #[test]
+    fn test_get_listing_works_after_ledge_advancement_without_config_access() {
+        // Test that get_listing extends its own TTL and works even if config wasn't accessed recently
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        
+        // Register a listing
+        let id = register(&client, &owner, b"QmHash", b"root", 1000);
+        assert!(client.get_listing(&id).is_some());
+        
+        // Advance ledger past typical TTL but not too far
+        env.ledger().with_mut(|li| li.sequence_number += 500_000);
+        
+        // get_listing should work and extend its own TTL
+        let listing = client.get_listing(&id);
+        assert!(listing.is_some(), "get_listing should work after ledger advancement");
+        assert_eq!(listing.unwrap().owner, owner);
+        
+        // Advance further and verify it still works
+        env.ledger().with_mut(|li| li.sequence_number += 500_000);
+        let listing2 = client.get_listing(&id);
+        assert!(listing2.is_some(), "get_listing should continue working after multiple TTL extensions");
+    }
+
+    // ── Issue #260 tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_register_ip_zero_price() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let result = client.try_register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &0u32,
+            &owner,
+            &0i128,
+        );
+        assert_eq!(result, Err(Ok(ContractError::InvalidPrice)));
+    }
+
+    #[test]
+    fn test_register_ip_negative_price() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let result = client.try_register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &0u32,
+            &owner,
+            &-1i128,
+        );
+        assert_eq!(result, Err(Ok(ContractError::InvalidPrice)));
+    }
+
+    #[test]
+    fn test_register_ip_valid_price() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let id = register(&client, &owner, b"QmHash", b"root", 1);
+        let listing = client.get_listing(&id).expect("listing should exist");
+        assert_eq!(listing.price_usdc, 1);
     }
 }
