@@ -501,7 +501,7 @@ impl AtomicSwap {
 
         let confirmed_at = swap
             .confirmed_at_ledger
-            .expect("confirmed_at_ledger missing");
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::MissingConfirmationLedger));
         let window: u32 = env
             .storage()
             .instance()
@@ -551,7 +551,7 @@ impl AtomicSwap {
 
         let confirmed_at = swap
             .confirmed_at_ledger
-            .expect("confirmed_at_ledger missing");
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::MissingConfirmationLedger));
         let window: u32 = env
             .storage()
             .instance()
