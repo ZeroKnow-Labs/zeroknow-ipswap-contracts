@@ -529,6 +529,7 @@ impl IpRegistry {
         env: Env,
         owner: Address,
         listing_id: u64,
+        atomic_swap: Option<Address>,
     ) -> Result<(), ContractError> {
         owner.require_auth();
 
@@ -541,6 +542,12 @@ impl IpRegistry {
 
         if listing.owner != owner {
             return Err(ContractError::Unauthorized);
+        }
+
+        if let Some(swap_addr) = atomic_swap {
+            if AtomicSwapClient::new(&env, &swap_addr).has_pending_swap(&listing_id) {
+                return Err(ContractError::PendingSwapExists);
+            }
         }
 
         env.storage().persistent().remove(&key);
@@ -925,7 +932,7 @@ mod test {
         let (env, client, _admin) = setup();
         let owner = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1);
-        client.deregister_listing(&owner, &id);
+        client.deregister_listing(&owner, &id, &None);
         assert!(client.get_listing(&id).is_none());
         assert_eq!(client.list_by_owner(&owner).len(), 0);
     }
@@ -936,7 +943,7 @@ mod test {
         let owner = Address::generate(&env);
         let attacker = Address::generate(&env);
         let id = register(&client, &owner, b"QmHash", b"root", 1);
-        let result = client.try_deregister_listing(&attacker, &id);
+        let result = client.try_deregister_listing(&attacker, &id, &None);
         assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
         assert!(client.get_listing(&id).is_some());
     }
@@ -1248,7 +1255,7 @@ mod test {
         let id = register(&client, &owner, b"QmHash", b"root", 1000);
         client.pause();
         // Deregister should succeed even when paused (read-only operation)
-        client.deregister_listing(&owner, &id);
+        client.deregister_listing(&owner, &id, &None);
         assert!(client.get_listing(&id).is_none());
     }
 
