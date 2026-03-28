@@ -41,6 +41,8 @@ pub enum ContractError {
     CancelTooEarly = 18,
     /// release_to_seller called before the dispute window has expired.
     DisputeWindowActive = 19,
+    /// confirmed_at_ledger is None when it is required to be set.
+    MissingConfirmationLedger = 20,
 }
 
 #[contracttype]
@@ -490,7 +492,7 @@ impl AtomicSwap {
 
         let confirmed_at = swap
             .confirmed_at_ledger
-            .expect("confirmed_at_ledger missing");
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::MissingConfirmationLedger));
         let window: u32 = env
             .storage()
             .instance()
@@ -540,7 +542,7 @@ impl AtomicSwap {
 
         let confirmed_at = swap
             .confirmed_at_ledger
-            .expect("confirmed_at_ledger missing");
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::MissingConfirmationLedger));
         let window: u32 = env
             .storage()
             .instance()
