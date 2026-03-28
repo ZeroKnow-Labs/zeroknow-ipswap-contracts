@@ -32,6 +32,22 @@ pub trait AtomicSwapInterface {
     fn has_pending_swap(env: Env, listing_id: u64) -> bool;
 }
 
+/// Client interface for IpRegistry — always compiled so dependents can use IpRegistryClient.
+#[cfg(not(feature = "contract"))]
+#[contractclient(name = "IpRegistryClient")]
+pub trait IpRegistryInterface {
+    fn get_listing(env: Env, listing_id: u64) -> Option<Listing>;
+    fn register_ip(
+        env: Env,
+        owner: Address,
+        ipfs_hash: Bytes,
+        merkle_root: Bytes,
+        royalty_bps: u32,
+        royalty_recipient: Address,
+        price_usdc: i128,
+    ) -> Result<u64, ContractError>;
+}
+
 
 
 
@@ -135,7 +151,7 @@ pub struct ContractUnpausedEvent {
     pub admin: Address,
 }
 
-#[contract]
+#[cfg_attr(feature = "contract", contract)]
 pub struct IpRegistry;
 
 fn get_config(env: &Env) -> Config {
@@ -162,7 +178,7 @@ fn assert_not_paused(env: &Env) {
     }
 }
 
-#[contractimpl]
+#[cfg_attr(feature = "contract", contractimpl)]
 impl IpRegistry {
     /// Must be called once before any other function.
     pub fn initialize(

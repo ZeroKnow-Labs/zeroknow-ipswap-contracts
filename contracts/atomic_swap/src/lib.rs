@@ -875,7 +875,7 @@ mod test {
 
     // ── price enforcement tests ───────────────────────────────────────────────
 
-    
+    #[test]
     #[should_panic(expected = "Error(Contract, #14)")]
     fn test_initiate_swap_rejects_underpayment() {
         let env = Env::default();
@@ -2194,6 +2194,34 @@ mod test {
             &0u32,
             &seller,
             &500i128,
+        );
+        let zk_verifier = Address::generate(&env);
+        let id1 = client.initiate_swap(
+            &listing_id1,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+        let id2 = client.initiate_swap(
+            &listing_id2,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
+        );
+        let id3 = client.initiate_swap(
+            &listing_id3,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &500,
+            &zk_verifier,
+            &registry_id,
         );
         // full page
         let page = client.get_swaps_by_buyer_page(&buyer, &0u32, &3u32);
