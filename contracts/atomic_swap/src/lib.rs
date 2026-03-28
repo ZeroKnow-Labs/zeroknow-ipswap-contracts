@@ -371,7 +371,6 @@ impl AtomicSwap {
                 seller: seller.clone(),
                 usdc_amount,
                 usdc_token,
-                zk_verifier: config.zk_verifier,
                 created_at: now,
                 expires_at,
                 status: SwapStatus::Pending,
@@ -524,12 +523,25 @@ impl AtomicSwap {
             .get(&DataKey::Config)
             .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
 
-        // Reject tiny amounts that would silently truncate protocol fees.
+        // Get listing to read royalty info
+        let listing = IpRegistryClient::new(&env, &config.ip_registry)
+            .get_listing(&swap.listing_id)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+
+        // Deduct protocol fee
         let fee: i128 = { Self::calculate_fee_amount(&env, swap.usdc_amount, config.fee_bps) };
-        let seller_amount = swap.usdc_amount - fee;
+        let mut seller_amount = swap.usdc_amount - fee;
         if fee > 0 {
             token_client.transfer(&contract_addr, &config.fee_recipient, &fee);
         }
+
+        // Deduct royalty
+        let royalty: i128 = (seller_amount * listing.royalty_bps as i128) / 10_000;
+        if royalty > 0 {
+            token_client.transfer(&contract_addr, &listing.royalty_recipient, &royalty);
+            seller_amount -= royalty;
+        }
+
         token_client.transfer(&contract_addr, &swap.seller, &seller_amount);
 
         swap.status = SwapStatus::ResolvedSeller;
@@ -601,20 +613,32 @@ impl AtomicSwap {
             token_client.transfer(&contract_addr, &swap.buyer, &swap.usdc_amount);
             swap.status = SwapStatus::ResolvedBuyer;
         } else {
-            if let Some(config) = env
+            let config: Config = env
                 .storage()
                 .instance()
-                .get::<DataKey, Config>(&DataKey::Config)
-            {
-                let fee = Self::calculate_fee_amount(&env, swap.usdc_amount, config.fee_bps);
-                let seller_amount = swap.usdc_amount - fee;
-                if fee > 0 {
-                    token_client.transfer(&contract_addr, &config.fee_recipient, &fee);
-                }
-                token_client.transfer(&contract_addr, &swap.seller, &seller_amount);
-            } else {
-                token_client.transfer(&contract_addr, &swap.seller, &swap.usdc_amount);
+                .get(&DataKey::Config)
+                .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+
+            // Get listing to read royalty info
+            let listing = IpRegistryClient::new(&env, &config.ip_registry)
+                .get_listing(&swap.listing_id)
+                .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
+
+            // Deduct protocol fee
+            let fee = Self::calculate_fee_amount(&env, swap.usdc_amount, config.fee_bps);
+            let mut seller_amount = swap.usdc_amount - fee;
+            if fee > 0 {
+                token_client.transfer(&contract_addr, &config.fee_recipient, &fee);
             }
+
+            // Deduct royalty
+            let royalty: i128 = (seller_amount * listing.royalty_bps as i128) / 10_000;
+            if royalty > 0 {
+                token_client.transfer(&contract_addr, &listing.royalty_recipient, &royalty);
+                seller_amount -= royalty;
+            }
+
+            token_client.transfer(&contract_addr, &swap.seller, &seller_amount);
             swap.status = SwapStatus::ResolvedSeller;
         }
 
@@ -851,7 +875,6 @@ mod test {
         Address,
         AtomicSwapClient<'a>,
         Address,
-        Address, // zk_id
     ) {
         let usdc_id = setup_usdc(env, buyer, usdc_amount);
         let (registry_id, listing_id) = setup_registry(env, seller, price_usdc);
@@ -860,7 +883,7 @@ mod test {
         let admin = Address::generate(env);
         let fee_recipient = Address::generate(env);
         let zk_id = env.register(ZkVerifier, ());
-        client.initialize(&admin, &0u32, &fee_recipient, &60u64, &zk_id);
+        client.initialize(&admin, &0u32, &fee_recipient, &60u64, &zk_id, &registry_id);
         client.add_allowed_token(&usdc_id);
         (usdc_id, listing_id, registry_id, contract_id, client, admin)
     }
@@ -874,7 +897,7 @@ mod test {
         usdc_id: &Address,
         _registry_id: &Address,
         usdc_amount: i128,
-        zk_id: &Address,
+        _zk_id: &Address,
     ) -> u64 {
         client.initiate_swap(
             &listing_id,
@@ -882,8 +905,6 @@ mod test {
             seller,
             usdc_id,
             &usdc_amount,
-            zk_id,
-            registry_id,
         )
     }
 
@@ -1778,6 +1799,143 @@ mod test {
             Some(SwapStatus::ResolvedSeller)
         );
         assert_eq!(usdc_client.balance(&seller), 500);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn test_resolve_dispute_panics_when_config_missing() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let (usdc_id, listing_id, registry_id, contract_id, client, admin) =
+            setup_full(&env, &buyer, &seller, 500, 500);
+
+        let key_bytes = Bytes::from_slice(&env, b"key");
+        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
+
+        let swap_id = confirmed_swap(
+            &env, &client, listing_id, &buyer, &seller, &usdc_id, &registry_id,
+            &zk_id, &proof_path, &key_bytes,
+        );
+        client.raise_dispute(&swap_id);
+
+        // Clear the config from instance storage
+        env.storage().instance().remove(&DataKey::Config);
+
+        // This should panic with NotInitialized instead of silently sending full amount
+        client.resolve_dispute(&swap_id, &false);
+    }
+
+    #[test]
+    fn test_release_to_seller_deducts_royalty() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let royalty_recipient = Address::generate(&env);
+        
+        // Setup with royalty_bps = 1000 (10%)
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let registry_id = env.register(IpRegistry, ());
+        let registry = IpRegistryClient::new(&env, &registry_id);
+        let admin = Address::generate(&env);
+        registry.initialize(&admin, &100_000u32, &6_312_000u32);
+        let listing_id = registry.register_ip(
+            &seller,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &1000u32,  // 10% royalty
+            &royalty_recipient,
+            &1000,
+        );
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+        let zk_id = env.register(ZkVerifier, ());
+        client.initialize(&admin, &0u32, &fee_recipient, &60u64, &zk_id, &registry_id);
+        client.add_allowed_token(&usdc_id);
+
+        let key_bytes = Bytes::from_slice(&env, b"key");
+        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
+
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &1000,
+        );
+        client.confirm_swap(&swap_id, &key_bytes, &proof_path);
+
+        // Advance past dispute window
+        env.ledger().with_mut(|li| li.sequence_number += 20_000);
+
+        let usdc_client = token::Client::new(&env, &usdc_id);
+        client.release_to_seller(&swap_id);
+
+        // Seller should receive 1000 - 100 (10% royalty) = 900
+        assert_eq!(usdc_client.balance(&seller), 900);
+        // Royalty recipient should receive 100
+        assert_eq!(usdc_client.balance(&royalty_recipient), 100);
+    }
+
+    #[test]
+    fn test_resolve_dispute_favor_seller_deducts_royalty() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let royalty_recipient = Address::generate(&env);
+        
+        // Setup with royalty_bps = 1000 (10%)
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let registry_id = env.register(IpRegistry, ());
+        let registry = IpRegistryClient::new(&env, &registry_id);
+        let admin = Address::generate(&env);
+        registry.initialize(&admin, &100_000u32, &6_312_000u32);
+        let listing_id = registry.register_ip(
+            &seller,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &1000u32,  // 10% royalty
+            &royalty_recipient,
+            &1000,
+        );
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+        let zk_id = env.register(ZkVerifier, ());
+        client.initialize(&admin, &0u32, &fee_recipient, &60u64, &zk_id, &registry_id);
+        client.add_allowed_token(&usdc_id);
+
+        let key_bytes = Bytes::from_slice(&env, b"key");
+        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
+
+        let swap_id = client.initiate_swap(
+            &listing_id,
+            &buyer,
+            &seller,
+            &usdc_id,
+            &1000,
+        );
+        client.confirm_swap(&swap_id, &key_bytes, &proof_path);
+        client.raise_dispute(&swap_id);
+
+        let usdc_client = token::Client::new(&env, &usdc_id);
+        client.resolve_dispute(&swap_id, &false);
+
+        // Seller should receive 1000 - 100 (10% royalty) = 900
+        assert_eq!(usdc_client.balance(&seller), 900);
+        // Royalty recipient should receive 100
+        assert_eq!(usdc_client.balance(&royalty_recipient), 100);
     }
 
     #[test]
