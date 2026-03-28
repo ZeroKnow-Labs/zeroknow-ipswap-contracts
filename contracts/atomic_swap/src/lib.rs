@@ -511,7 +511,7 @@ impl AtomicSwap {
             panic_with_error!(&env, ContractError::DisputeWindowActive);
         }
 
-        let usdc = token::Client::new(&env, &swap.usdc_token);
+        let token_client = token::Client::new(&env, &swap.usdc_token);
         let contract_addr = env.current_contract_address();
         let config: Config = env
             .storage()
@@ -523,9 +523,9 @@ impl AtomicSwap {
         let fee: i128 = { Self::calculate_fee_amount(&env, swap.usdc_amount, config.fee_bps) };
         let seller_amount = swap.usdc_amount - fee;
         if fee > 0 {
-            usdc.transfer(&contract_addr, &config.fee_recipient, &fee);
+            token_client.transfer(&contract_addr, &config.fee_recipient, &fee);
         }
-        usdc.transfer(&contract_addr, &swap.seller, &seller_amount);
+        token_client.transfer(&contract_addr, &swap.seller, &seller_amount);
 
         swap.status = SwapStatus::ResolvedSeller;
         env.storage().persistent().set(&key, &swap);
@@ -589,11 +589,11 @@ impl AtomicSwap {
             env.panic_with_error(ContractError::SwapNotDisputed);
         }
 
-        let usdc = token::Client::new(&env, &swap.usdc_token);
+        let token_client = token::Client::new(&env, &swap.usdc_token);
         let contract_addr = env.current_contract_address();
 
         if favor_buyer {
-            usdc.transfer(&contract_addr, &swap.buyer, &swap.usdc_amount);
+            token_client.transfer(&contract_addr, &swap.buyer, &swap.usdc_amount);
             swap.status = SwapStatus::ResolvedBuyer;
         } else {
             if let Some(config) = env
@@ -604,11 +604,11 @@ impl AtomicSwap {
                 let fee = Self::calculate_fee_amount(&env, swap.usdc_amount, config.fee_bps);
                 let seller_amount = swap.usdc_amount - fee;
                 if fee > 0 {
-                    usdc.transfer(&contract_addr, &config.fee_recipient, &fee);
+                    token_client.transfer(&contract_addr, &config.fee_recipient, &fee);
                 }
-                usdc.transfer(&contract_addr, &swap.seller, &seller_amount);
+                token_client.transfer(&contract_addr, &swap.seller, &seller_amount);
             } else {
-                usdc.transfer(&contract_addr, &swap.seller, &swap.usdc_amount);
+                token_client.transfer(&contract_addr, &swap.seller, &swap.usdc_amount);
             }
             swap.status = SwapStatus::ResolvedSeller;
         }
