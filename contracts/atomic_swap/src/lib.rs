@@ -1010,6 +1010,19 @@ mod test {
 
         let buyer = Address::generate(&env);
         let seller = Address::generate(&env);
+        let zk_verifier = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let usdc_client = token::Client::new(&env, &usdc_id);
+        let (registry_id, listing_id) = setup_registry(&env, &seller);
+
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        let mut allowed = soroban_sdk::Vec::new(&env);
+        allowed.push_back(usdc_id.clone());
+        client.initialize(&Address::generate(&env), &0u32, &fee_recipient, &60u64, &registry_id, &allowed);
         // Listing price is 500, buyer pays 1000
         let (usdc_id, listing_id, registry_id, _cid, client, _admin, zk_id) =
             setup_full(&env, &buyer, &seller, 1000, 500);
@@ -2560,7 +2573,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
         let id2 = client.initiate_swap(
             &listing_id2,
@@ -2569,7 +2581,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
         let id3 = client.initiate_swap(
             &listing_id3,
@@ -2670,7 +2681,6 @@ mod test {
             &bad_token,
             &500,
             &zk_verifier,
-            &registry_id,
         );
     }
 
