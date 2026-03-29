@@ -1912,6 +1912,58 @@ mod test {
     }
 
     #[test]
+    fn test_release_to_seller_pays_royalties() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let royalty_recipient = Address::generate(&env);
+
+        // Register listing with 500 bps (5%) royalty
+        let registry_id = env.register(IpRegistry, ());
+        let registry = IpRegistryClient::new(&env, &registry_id);
+        let reg_admin = Address::generate(&env);
+        registry.initialize(&reg_admin, &100_000u32, &6_312_000u32);
+        let listing_id = registry.register_ip(
+            &seller,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &500u32,
+            &royalty_recipient,
+            &1i128,
+        );
+
+        let usdc_id = setup_usdc(&env, &buyer, 1000);
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+        let zk_id = env.register(ZkVerifier, ());
+        // fee_bps = 200 (2%)
+        client.initialize(&admin, &200u32, &fee_recipient, &60u64, &zk_id, &registry_id);
+        client.add_allowed_token(&usdc_id);
+
+        let key_bytes = Bytes::from_slice(&env, b"key");
+        let (zk_id, proof_path) = setup_zk_verifier(&env, &seller, listing_id, &key_bytes);
+        let swap_id = client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &1000, &zk_id, &registry_id);
+        client.confirm_swap(&swap_id, &key_bytes, &proof_path);
+
+        // Advance past dispute window
+        env.ledger().with_mut(|li| li.sequence_number += 17_281);
+        client.release_to_seller(&swap_id);
+
+        let usdc = token::Client::new(&env, &usdc_id);
+        // fee = 1000 * 200 / 10_000 = 20
+        // seller_pre_royalty = 1000 - 20 = 980
+        // royalty = 980 * 500 / 10_000 = 49
+        // seller_final = 980 - 49 = 931
+        assert_eq!(usdc.balance(&fee_recipient), 20);
+        assert_eq!(usdc.balance(&royalty_recipient), 49);
+        assert_eq!(usdc.balance(&seller), 931);
+    }
+
+    #[test]
     fn test_resolve_dispute_favor_buyer_refunds_usdc() {
         let env = Env::default();
         env.mock_all_auths();
