@@ -805,9 +805,6 @@ impl AtomicSwap {
             .persistent()
             .remove(&DataKey::ActiveListingSwap(swap.listing_id));
         env.storage()
-            .persistent()
-            .remove(&DataKey::ActiveListingSwap(swap.listing_id));
-        env.storage()
             .instance()
             .extend_ttl(PERSISTENT_TTL_LEDGERS, PERSISTENT_TTL_LEDGERS);
 
@@ -2733,7 +2730,7 @@ mod test {
         assert!(client.is_listing_available(&listing_id));
     }
 
-    /// Issue #322: cancel_swap must remove ActiveListingSwap so a new buyer can
+    /// Issue #572: cancel_swap must remove ActiveListingSwap so a new buyer can
     /// immediately initiate a swap on the same listing without hitting SwapAlreadyPending.
     #[test]
     fn test_cancel_and_reinitiate_swap() {
