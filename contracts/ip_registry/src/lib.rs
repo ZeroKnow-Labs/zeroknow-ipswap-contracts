@@ -512,6 +512,8 @@ impl IpRegistry {
         let cfg = get_config(&env);
         listing.ipfs_hash = new_ipfs_hash.clone();
         listing.merkle_root = new_merkle_root.clone();
+        listing.price_usdc = new_price_usdc;
+        listing.royalty_bps = new_royalty_bps;
         env.storage().persistent().set(&key, &listing);
         extend_persistent(&env, &key, &cfg);
         env.storage().persistent().extend_ttl(
@@ -519,6 +521,16 @@ impl IpRegistry {
             cfg.ttl_threshold,
             cfg.ttl_extend_to,
         );
+
+        IpUpdated {
+            listing_id,
+            owner,
+            ipfs_hash: new_ipfs_hash,
+            merkle_root: new_merkle_root,
+            price_usdc: new_price_usdc,
+            royalty_bps: new_royalty_bps,
+        }
+        .publish(&env);
 
         Ok(())
     }
@@ -1655,5 +1667,67 @@ mod test {
         let ids = client.list_by_owner(&owner);
         assert_eq!(ids.len(), 1, "Owner index failed to persist after deregistration extension window");
         assert_eq!(ids.get(0).unwrap(), id2);
+    }
+
+    // ── Issue: update_listing event emission ────────────────────────────────
+
+    #[test]
+    fn test_update_listing_emits_ip_updated_event() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let atomic_swap = Address::generate(&env);
+        let id = register(&client, &owner, b"QmOldHash", b"oldRoot", 1000);
+
+        let new_hash = Bytes::from_slice(&env, b"QmNewHash");
+        let new_root = Bytes::from_slice(&env, b"newRoot");
+        let new_price: i128 = 2500;
+        let new_royalty: u32 = 750;
+
+        client.update_listing(
+            &owner,
+            &id,
+            &new_hash,
+            &new_root,
+            &new_price,
+            &new_royalty,
+            &atomic_swap,
+        );
+
+        // Verify storage was updated for all four fields
+        let listing = client.get_listing(&id).unwrap();
+        assert_eq!(listing.ipfs_hash, new_hash);
+        assert_eq!(listing.merkle_root, new_root);
+        assert_eq!(listing.price_usdc, new_price);
+        assert_eq!(listing.royalty_bps, new_royalty);
+
+        // Verify IpUpdated event was emitted with the correct updated values
+        let all_events = env.events().all();
+        let contract_events = all_events.filter_by_contract(&client.address);
+        assert!(
+            !contract_events.events().is_empty(),
+            "IpUpdated event should be emitted after update_listing"
+        );
+
+        // The last event emitted by this contract should be IpUpdated.
+        // Topics: [symbol("IpUpdated"), listing_id, owner]
+        // Data:   (ipfs_hash, merkle_root, price_usdc, royalty_bps)
+        let events_vec = contract_events.events();
+        let (_, topics, data) = events_vec.last().unwrap();
+
+        let emitted_listing_id: u64 = topics.get(1).unwrap().into_val(&env);
+        let emitted_owner: Address = topics.get(2).unwrap().into_val(&env);
+        assert_eq!(emitted_listing_id, id, "event listing_id mismatch");
+        assert_eq!(emitted_owner, owner, "event owner mismatch");
+
+        let (emitted_hash, emitted_root, emitted_price, emitted_royalty): (
+            Bytes,
+            Bytes,
+            i128,
+            u32,
+        ) = data.into_val(&env);
+        assert_eq!(emitted_hash, new_hash, "event ipfs_hash mismatch");
+        assert_eq!(emitted_root, new_root, "event merkle_root mismatch");
+        assert_eq!(emitted_price, new_price, "event price_usdc mismatch");
+        assert_eq!(emitted_royalty, new_royalty, "event royalty_bps mismatch");
     }
 }
