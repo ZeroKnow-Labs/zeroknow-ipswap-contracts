@@ -1095,6 +1095,7 @@ mod test {
         // Verify listing is gone and owner index is empty
         assert!(client.get_listing(&id).is_none());
         assert_eq!(client.list_by_owner(&owner).len(), 0);
+        assert!(!env.storage().persistent().has(&idx_key));
     }
 
     #[test]
@@ -1576,6 +1577,22 @@ mod test {
             &owner,
             &-1i128,
         );
+        assert_eq!(result, Err(Ok(ContractError::InvalidPrice)));
+    }
+
+    #[test]
+    fn test_register_ip_negative_price_does_not_return_invalid_input() {
+        let (env, client, _admin) = setup();
+        let owner = Address::generate(&env);
+        let result = client.try_register_ip(
+            &owner,
+            &Bytes::from_slice(&env, b"QmHash"),
+            &Bytes::from_slice(&env, b"root"),
+            &0u32,
+            &owner,
+            &-1i128,
+        );
+        assert_ne!(result, Err(Ok(ContractError::InvalidInput)));
         assert_eq!(result, Err(Ok(ContractError::InvalidPrice)));
     }
 
