@@ -7,6 +7,16 @@ Soroban smart contracts for atomic IP swaps on Stellar.
 **Organization:** [ZeroKnow-Labs](https://github.com/ZeroKnow-Labs)  
 **Repository:** [zeroknow-ipswap-contracts](https://github.com/ZeroKnow-Labs/zeroknow-ipswap-contracts)
 
+## Overview
+
+Built on **Stellar** using **Soroban smart contracts** for trustless atomic swaps with USDC payments, on-chain IP registry, and zero-knowledge proof verification.
+
+**Stellar Integration:**
+- 🌟 **Soroban Smart Contracts** — Native Stellar smart contract platform
+- 💰 **USDC Payments** — Stellar Asset Contract (SAC) for USDC transfers
+- 🔒 **Atomic Swaps** — Built-in transaction atomicity
+- 📊 **On-chain Registry** — Persistent Stellar storage with TTL management
+
 ## Contracts
 
 - **`contracts/atomic_swap`** — Atomic swaps with USDC, fee handling, pause/cancel.
