@@ -1,0 +1,30 @@
+# Rust build artifacts
+/target
+*.rs.bk
+
+# Compiled contracts
+*.wasm
+out/
+
+# Environment files
+.env
+.env.local
+
+# Logs
+*.log
+
+# Editor / OS
+.kiro/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Test artifacts
+test_snapshots/
+*.profraw
+*.profdata
+build_error.txt
+build_output.txt
