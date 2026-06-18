@@ -1,12 +1,22 @@
-# Atomic IP Marketplace — Contracts
+# ZeroKnow IPSwap — Contracts
+
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 
 Soroban smart contracts for atomic IP swaps on Stellar.
+
+**Organization:** [ZeroKnow-Labs](https://github.com/ZeroKnow-Labs)  
+**Repository:** [zeroknow-ipswap-contracts](https://github.com/ZeroKnow-Labs/zeroknow-ipswap-contracts)
 
 ## Contracts
 
 - **`contracts/atomic_swap`** — Atomic swaps with USDC, fee handling, pause/cancel.
 - **`contracts/ip_registry`** — On-chain IP asset registration with TTL.
 - **`contracts/zk_verifier`** — Merkle-tree ZK proof verification with TTL.
+
+## Related Repositories
+
+- **[zeroknow-ipswap-frontend](https://github.com/ZeroKnow-Labs/zeroknow-ipswap-frontend)** — React + TypeScript UI
+- **[zeroknow-ipswap-docs](https://github.com/ZeroKnow-Labs/zeroknow-ipswap-docs)** — Documentation
 
 ## Prerequisites
 
