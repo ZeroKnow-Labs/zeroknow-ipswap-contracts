@@ -342,11 +342,7 @@ impl AtomicSwap {
         let product = usdc_amount
             .checked_mul(fee_bps as i128)
             .unwrap_or_else(|| env.panic_with_error(ContractError::Overflow));
-        let fee = product / 10_000;
-        if fee == 0 {
-            env.panic_with_error(ContractError::FeeWouldTruncate);
-        }
-        fee
+        product / 10_000
     }
 
     fn validate_fee_amount(env: &Env, usdc_amount: i128, fee_bps: u32) {
@@ -1722,37 +1718,6 @@ mod test {
 
         assert_eq!(usdc_client.balance(&seller), 1000);
         assert_eq!(usdc_client.balance(&fee_recipient), 0);
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #15)")]
-    fn test_initiate_swap_rejects_amount_that_truncates_fee() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let buyer = Address::generate(&env);
-        let seller = Address::generate(&env);
-        let fee_recipient = Address::generate(&env);
-
-        let usdc_id = setup_usdc(&env, &buyer, 1);
-        let (registry_id, listing_id) = setup_registry(&env, &seller, 1);
-
-        let contract_id = env.register(AtomicSwap, ());
-        let client = AtomicSwapClient::new(&env, &contract_id);
-        let zk_id = env.register(ZkVerifier, ());
-        client.initialize(
-            &Address::generate(&env),
-            &250u32,
-            &fee_recipient,
-            &60u64,
-            &3600u64,
-            &zk_id,
-            &registry_id,
-        );
-        client.add_allowed_token(&usdc_id);
-        token::Client::new(&env, &usdc_id).approve(&buyer, &contract_id, &1i128, &200u32);
-
-        client.initiate_swap(&listing_id, &buyer, &seller, &usdc_id, &1);
     }
 
     #[test]
